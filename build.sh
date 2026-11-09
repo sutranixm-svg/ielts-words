@@ -24,7 +24,7 @@ mkdir -p "$OUT/classes"
 
 "$JAVA_BIN/javac" -encoding UTF-8 -source 1.8 -target 1.8 \
   -bootclasspath "$SDK_JAR" -d "$OUT/classes" \
-  "$ROOT/android/src/com/dsh/ielts/MainActivity.java" 2>&1 | grep -v "bootstrap class path" || true
+  "$ROOT"/android/src/com/dsh/ielts/*.java 2>&1 | grep -v "bootstrap class path" || true
 
 /usr/lib/android-sdk/build-tools/debian/dx --dex --output="$OUT/classes.dex" "$OUT/classes"
 

@@ -1,18 +1,31 @@
 package com.dsh.ielts;
 
 import android.app.Activity;
+import android.content.Intent;
+import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
+import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.view.View;
 import android.view.Window;
+import android.webkit.JavascriptInterface;
+import android.webkit.ValueCallback;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
-import android.webkit.ValueCallback;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
 
 public class MainActivity extends Activity {
+    private static final String UPDATE_FILE = "update.apk";
+
     private WebView web;
     private boolean dark;
 
@@ -38,8 +51,154 @@ public class MainActivity extends Activity {
         s.setTextZoom(100);
         s.setMediaPlaybackRequiresUserGesture(false);
         web.setWebViewClient(new WebViewClient());
+        web.addJavascriptInterface(new Bridge(), "App");
         web.loadUrl("file:///android_asset/index.html");
         setContentView(web);
+    }
+
+    /** 暴露给网页的最小接口：版本号 + 下载安装。 */
+    private class Bridge {
+        @JavascriptInterface
+        public String version() {
+            try {
+                return getPackageManager().getPackageInfo(getPackageName(), 0).versionName;
+            } catch (PackageManager.NameNotFoundException e) {
+                return "0";
+            }
+        }
+
+        @JavascriptInterface
+        public void installUpdate(final String url) {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) {
+                emit("error:地址不合法");
+                return;
+            }
+            emit("downloading");
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    download(url);
+                }
+            }).start();
+        }
+
+        @JavascriptInterface
+        public String platform() {
+            return "android";
+        }
+    }
+
+    private void download(String url) {
+        File out = new File(getCacheDir(), UPDATE_FILE);
+        if (out.exists() && !out.delete()) {
+            emit("error:无法清理旧文件");
+            return;
+        }
+        HttpURLConnection conn = null;
+        InputStream in = null;
+        FileOutputStream fos = null;
+        try {
+            conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setConnectTimeout(20000);
+            conn.setReadTimeout(30000);
+            conn.setRequestProperty("User-Agent", "ielts-words-updater");
+            conn.setInstanceFollowRedirects(true);
+            int code = conn.getResponseCode();
+            if (code != 200) {
+                emit("error:HTTP " + code);
+                return;
+            }
+            long total = conn.getContentLength();
+            in = conn.getInputStream();
+            fos = new FileOutputStream(out);
+            byte[] buf = new byte[64 * 1024];
+            long got = 0;
+            int n;
+            int lastPct = -1;
+            while ((n = in.read(buf)) > 0) {
+                fos.write(buf, 0, n);
+                got += n;
+                if (total > 0) {
+                    int pct = (int) (got * 100 / total);
+                    if (pct != lastPct && pct % 5 == 0) {
+                        lastPct = pct;
+                        emit("progress:" + pct);
+                    }
+                }
+            }
+            fos.flush();
+            fos.close();
+            fos = null;
+            if (total > 0 && got != total) {
+                out.delete();
+                emit("error:下载不完整");
+                return;
+            }
+            install(out);
+        } catch (Exception e) {
+            if (out.exists()) out.delete();
+            emit("error:" + e.getClass().getSimpleName());
+        } finally {
+            try { if (fos != null) fos.close(); } catch (Exception ignored) { }
+            try { if (in != null) in.close(); } catch (Exception ignored) { }
+            if (conn != null) conn.disconnect();
+        }
+    }
+
+    /** API 26 才有，编译期用 android-23 的 jar，所以走反射。 */
+    private boolean canInstallPackages() {
+        try {
+            Object r = getPackageManager().getClass().getMethod("canRequestPackageInstalls")
+                    .invoke(getPackageManager());
+            return Boolean.TRUE.equals(r);
+        } catch (Throwable t) {
+            return true;
+        }
+    }
+
+    private void install(File apk) {
+        if (Build.VERSION.SDK_INT >= 26 && !canInstallPackages()) {
+            emit("error:需要允许安装未知应用");
+            Intent i = new Intent("android.settings.MANAGE_UNKNOWN_APP_SOURCES",
+                    Uri.parse("package:" + getPackageName()));
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try { startActivity(i); } catch (Exception ignored) { }
+            return;
+        }
+        try {
+            Uri uri = ApkProvider.uriFor(this, apk);
+            Intent i = new Intent(Intent.ACTION_VIEW);
+            i.setDataAndType(uri, "application/vnd.android.package-archive");
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(i);
+            emit("installing");
+        } catch (Exception e) {
+            Toast.makeText(this, "启动安装失败：" + e.getClass().getSimpleName(), Toast.LENGTH_LONG).show();
+            emit("error:启动安装失败");
+        }
+    }
+
+    /** 把更新状态回传给网页，供提示条更新。 */
+    private void emit(final String status) {
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (web == null) return;
+                String js = "window.__updateStatus && window.__updateStatus(" + quote(status) + ")";
+                web.evaluateJavascript(js, null);
+            }
+        });
+    }
+
+    private static String quote(String s) {
+        StringBuilder b = new StringBuilder("'");
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\'' || c == '\\') b.append('\\');
+            b.append(c);
+        }
+        return b.append('\'').toString();
     }
 
     private void applySystemBars() {

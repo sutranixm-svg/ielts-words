@@ -202,3 +202,14 @@ h3{font-size:14px;margin:0;letter-spacing:.2px;font-weight:700}
 @keyframes up{from{transform:translateY(26px);opacity:.7}to{transform:none;opacity:1}}
 @keyframes bar{from{transform:scaleY(.03)}to{transform:scaleY(1)}}
 @keyframes ring{from{stroke-dashoffset:326.7}}
+
+/* 更新提示条 */
+.update-bar{display:flex;align-items:center;gap:12px;padding:12px 14px;border-radius:18px;
+  background:linear-gradient(135deg,rgba(45,212,191,.14),rgba(56,189,248,.10));
+  border:1px solid rgba(45,212,191,.28);margin:0 0 12px}
+.ub-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:3px}
+.ub-body b{font-size:14px;font-weight:700}
+.ub-body span{font-size:11px;color:var(--muted);line-height:1.35}
+.ub-state{font-size:13px;font-weight:650;color:var(--accent);white-space:nowrap}
+.btn.xs{height:34px;padding:0 14px;font-size:13px;border-radius:11px;flex:none}
+.icon-btn.xs{width:26px;height:26px;border-radius:9px;font-size:15px;background:transparent;border:none;color:var(--dim)}

@@ -10,6 +10,9 @@
   const MASTER_BOX = 4;
   const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const KINDS = ['zh', 'en', 'spell'];
+  const REPO = 'sutranixm-svg/ielts-words';
+  const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
+  const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
 
   /* ---------- 基础工具 ---------- */
 
@@ -65,6 +68,8 @@
       session: null,
       quiz: null,
       lastSession: null,
+      update: null,
+      seenUpdate: '',
       ui: { tab: 'today', screen: null, confirm: null },
     };
   }
@@ -498,6 +503,75 @@
 
   /* ---------- 渲染：今天 ---------- */
 
+  /* ---------- 更新检查 ---------- */
+
+  let updateState = '';
+
+  function cmpVersion(a, b) {
+    const pa = String(a).replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+    const pb = String(b).replace(/^v/i, '').split('.').map((x) => parseInt(x, 10) || 0);
+    for (let i = 0; i < Math.max(pa.length, pb.length); i += 1) {
+      const d = (pa[i] || 0) - (pb[i] || 0);
+      if (d) return d > 0 ? 1 : -1;
+    }
+    return 0;
+  }
+
+  function checkUpdate(manual) {
+    if (!window.fetch) return;
+    fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => {
+        const tag = j && j.tag_name ? j.tag_name : '';
+        const apk = ((j && j.assets) || []).find((a) => /\.apk$/i.test(a.name || ''));
+        if (!tag || !apk) throw new Error('no apk');
+        if (cmpVersion(tag, APP_VERSION) <= 0) {
+          S.update = null;
+          save();
+          render();
+          if (manual) toast('已是最新版本 v' + APP_VERSION);
+          return;
+        }
+        const ver = String(tag).replace(/^v/i, '');
+        S.update = { version: ver, url: apk.browser_download_url, size: apk.size };
+        if (S.seenUpdate === ver) S.seenUpdate = '';
+        save();
+        render();
+        if (manual) toast('发现新版本 v' + ver);
+      })
+      .catch(() => {
+        if (manual) toast('检查更新失败，稍后再试');
+      });
+  }
+
+  function updateBanner() {
+    const u = S.update;
+    if (!u || !u.version || u.version === S.seenUpdate) return '';
+    let right;
+    if (updateState === 'downloading') right = '<span class="ub-state">下载中…</span>';
+    else if (updateState.indexOf('progress:') === 0) right = `<span class="ub-state">${updateState.slice(9)}%</span>`;
+    else if (updateState === 'installing') right = '<span class="ub-state">安装中…</span>';
+    else right = '<button class="btn primary xs" data-act="update">一键更新</button>';
+    const sub = updateState.indexOf('error:') === 0
+      ? '更新失败：' + esc(updateState.slice(6))
+      : `新版本 v${esc(u.version)} · 约 ${Math.round((u.size || 0) / 1048576 * 10) / 10} MB`;
+    return `<section class="update-bar">
+        <div class="ub-body">
+          <b>有新版本可更新</b>
+          <span>${sub}</span>
+        </div>
+        ${right}
+        <button class="icon-btn xs" data-act="update-later" aria-label="稍后再说">×</button>
+      </section>`;
+  }
+
+  window.__updateStatus = function (status) {
+    updateState = String(status || '');
+    if (updateState === 'installing') toast('安装包就绪，按提示完成安装');
+    if (updateState.indexOf('error:') === 0) toast('更新失败：' + updateState.slice(6));
+    render();
+  };
+
   function todayScreen() {
     const st = stats();
     const done = st.today.total;
@@ -528,6 +602,7 @@
             ? `今天还有 ${st.newLeft} 个新词，来一组？`
             : '今天的词学完了，做组测验？';
     return `<div class="screen">
+      ${updateBanner()}
       <section class="coach">
         <img class="coach-ava" src="avatar.png" alt="鲸娘">
         <div class="coach-body">
@@ -580,7 +655,7 @@
     const body = revealed
       ? `<div class="divider"></div>
          <div class="meaning">${esc(w.pos)} ${esc(w.zh)}</div>
-         <div class="example">${esc(w.ex)}</div>`
+         ${w.ex ? `<div class="example">${esc(w.ex)}</div>` : ''}`
       : `<div class="hint">先回忆一下，再点开对照</div>`;
     return `<div class="screen">
       <div class="study-head">
@@ -680,7 +755,7 @@
       ? `<div class="feedback ${item.correct ? 'good' : 'bad'}">
            <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc(item.options[item.answer])}</div>
            <div class="small muted">${esc(w.pos)} ${esc(w.zh)}</div>
-           <div class="small muted">${esc(w.ex)}</div>
+           ${w.ex ? `<div class="small muted">${esc(w.ex)}</div>` : ''}
          </div>
          <button class="btn primary" data-act="quiz:next">${last ? '看结果' : '下一题'}</button>`
       : '';
@@ -809,7 +884,8 @@
       <p class="small muted">调整后从下一组开始生效。学习记录只保存在这台手机上。</p>
       <button class="btn danger" data-act="ask-reset">重置学习进度</button>
       <button class="btn ghost" data-act="back">返回</button>
-      <p class="small muted center">雅思核心 720 词 · 6 大主题</p>
+      <button class="btn ghost" data-act="check-update">检查更新</button>
+      <p class="small muted center">${WORDS.length} 词 · ${TOPICS.length} 个主题 · v${esc(APP_VERSION)}</p>
     </div>`;
   }
 
@@ -988,6 +1064,25 @@
       case 'clear-wrong':
         doClearWrong();
         break;
+      case 'update':
+        if (S.update && window.App && window.App.installUpdate) {
+          updateState = 'downloading';
+          render();
+          window.App.installUpdate(S.update.url);
+        } else {
+          toast('请在浏览器打开 GitHub 页面下载');
+        }
+        break;
+      case 'update-later':
+        S.seenUpdate = S.update ? S.update.version : '';
+        updateState = '';
+        save();
+        render();
+        break;
+      case 'check-update':
+        toast('正在检查更新…');
+        checkUpdate(true);
+        break;
       default:
         break;
     }
@@ -995,6 +1090,7 @@
 
   window.addEventListener('load', render);
   render();
+  setTimeout(function () { checkUpdate(false); }, 1500);
 
   // 系统返回键：先关弹层/子页，再回今天，最后才退出
   window.__ieltsBack = function () {
