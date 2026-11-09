@@ -28,11 +28,13 @@ FEEDS = {
     "business": [
         ("CNBC", "https://www.cnbc.com/id/100003114/device/rss/rss.html", 3),
         ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories", 2),
+        ("WSJ", "https://feeds.a.dj.com/rss/RSSWorldNews.xml", 2),
         ("BBC Business", "https://feeds.bbci.co.uk/news/business/rss.xml", 2),
     ],
     "life": [
         ("The Guardian", "https://www.theguardian.com/lifeandstyle/rss", 3),
         ("BBC Health", "https://feeds.bbci.co.uk/news/health/rss.xml", 2),
+        ("Sky News", "https://feeds.skynews.com/feeds/rss/world.xml", 2),
     ],
     "culture": [
         ("Variety", "https://variety.com/feed/", 3),
@@ -136,11 +138,34 @@ def mymemory(text, src="en", dst="zh-CN"):
     return t.strip()
 
 
+_PROVIDER = None
+
+
+def pick_provider():
+    global _PROVIDER
+    if _PROVIDER is not None:
+        return _PROVIDER
+    for name, fn in (("gtx", gtx), ("mymemory", mymemory)):
+        try:
+            out = fn("hello")
+            if out:
+                _PROVIDER = fn
+                print("translator:", name, file=sys.stderr)
+                return _PROVIDER
+        except Exception:
+            print("translator %s unavailable" % name, file=sys.stderr)
+    _PROVIDER = False
+    return _PROVIDER
+
+
 def translate(text):
     text = (text or "").strip()
     if not text or not re.search(r"[A-Za-z]{3}", text):
         return ""
-    for fn in (gtx, mymemory):
+    prov = pick_provider()
+    if not prov:
+        return ""
+    for fn in (prov,):
         try:
             out = fn(text)
             if out and re.search(r"[\u4e00-\u9fff]", out):
