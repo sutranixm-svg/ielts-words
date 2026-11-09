@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="badge" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#12303f"/>
+      <stop offset=".55" stop-color="#0b1c2c"/>
+      <stop offset="1" stop-color="#08111e"/>
+    </linearGradient>
+    <radialGradient id="glow" cx=".3" cy=".18" r=".95">
+      <stop offset="0" stop-color="#2dd4bf" stop-opacity=".42"/>
+      <stop offset=".5" stop-color="#2dd4bf" stop-opacity=".09"/>
+      <stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="skin" x1=".15" y1="0" x2=".85" y2="1">
+      <stop offset="0" stop-color="#8cf3e1"/>
+      <stop offset=".4" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#0284c7"/>
+    </linearGradient>
+    <linearGradient id="tail" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#22b8cf"/>
+      <stop offset="1" stop-color="#0369a1"/>
+    </linearGradient>
+    <linearGradient id="belly" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f2fffd"/>
+      <stop offset="1" stop-color="#a9eee6"/>
+    </linearGradient>
+    <clipPath id="bodyClip">
+      <path d="M438 300c2-64-46-116-124-120-74-4-126 38-148 86-9 20-10 40-2 58 24 46 78 72 146 70 74-2 126-38 128-94z"/>
+    </clipPath>
+    <filter id="shadow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="16" stdDeviation="16" flood-color="#02080d" flood-opacity=".5"/>
+    </filter>
+  </defs>
+
+  <circle cx="256" cy="256" r="248" fill="url(#badge)"/>
+  <circle cx="256" cy="256" r="248" fill="url(#glow)"/>
+  <circle cx="256" cy="256" r="242" fill="none" stroke="#5eead4" stroke-opacity=".16" stroke-width="3"/>
+
+  <g fill="#9df3e6" fill-opacity=".5">
+    <circle cx="424" cy="186" r="6.5"/>
+    <circle cx="446" cy="154" r="4.2"/>
+    <circle cx="402" cy="140" r="2.8"/>
+  </g>
+
+  <g fill="#c9fbf4">
+    <ellipse cx="336" cy="176" rx="16" ry="6" fill="#0a2430" opacity=".55"/>
+    <path d="M318 166c2-15 18-19 20-4 1 9-8 15-14 15-4 0-7-5-6-11z" opacity=".92"/>
+    <path d="M344 150c1-12 15-15 17-3 1 8-7 13-12 13-4 0-6-4-5-10z" opacity=".85"/>
+    <path d="M366 168c1-9 11-11 12-2 1 6-5 9-8 9-3 0-5-3-4-7z" opacity=".75"/>
+  </g>
+
+  <path d="M178 288c-26-26-54-42-82-38-7 1-10 9-6 14 14 18 22 31 24 44 2 14-6 27-20 45-4 6 0 13 6 13 28 2 56-14 82-38z"
+        fill="url(#tail)" filter="url(#shadow)"/>
+
+  <path d="M438 300c2-64-46-116-124-120-74-4-126 38-148 86-9 20-10 40-2 58 24 46 78 72 146 70 74-2 126-38 128-94z"
+        fill="url(#skin)" filter="url(#shadow)"/>
+
+  <g clip-path="url(#bodyClip)">
+    <path d="M180 322c12 68 70 104 136 96 44-5 76-24 96-54-2 46-46 74-104 76-70 2-120-38-128-118z"
+          fill="url(#belly)" opacity=".97"/>
+    <path d="M206 356c22 34 62 52 104 50" fill="none" stroke="#ffffff" stroke-opacity=".55" stroke-width="5" stroke-linecap="round"/>
+  </g>
+
+  <path d="M302 374c19 16 31 36 18 50-16-6-30-24-38-44z" fill="#0b96c4"/>
+  <path d="M307 382c9 11 14 22 11 29-9-6-17-16-22-27z" fill="#a6f7ea" opacity=".35"/>
+
+  <path d="M258 220c24-16 54-19 80-9" fill="none" stroke="#ffffff" stroke-opacity=".22" stroke-width="8" stroke-linecap="round"/>
+
+  <circle cx="382" cy="270" r="20" fill="#ffffff"/>
+  <circle cx="387" cy="272" r="10.6" fill="#07222c"/>
+  <circle cx="383" cy="268" r="3.7" fill="#ffffff"/>
+  <circle cx="392" cy="277" r="1.9" fill="#ffffff" opacity=".85"/>
+
+  <path d="M404 308c8 10 21 10 28-1" fill="none" stroke="#053441" stroke-width="6.5" stroke-linecap="round" opacity=".9"/>
+  <circle cx="358" cy="312" r="10" fill="#fb7185" opacity=".26"/>
+  <circle cx="418" cy="240" r="2.6" fill="#ffffff" opacity=".6"/>
+
+  <!-- reminder clock -->
+  <g transform="translate(414 398)">
+    <circle r="36" fill="#0b1c2c" stroke="#2dd4bf" stroke-opacity=".35" stroke-width="3"/>
+    <circle r="28" fill="#e9fffb"/>
+    <circle r="28" fill="none" stroke="#0f766e" stroke-opacity=".25" stroke-width="2"/>
+    <path d="M0 -19V0l13 8" fill="none" stroke="#0f766e" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    <circle r="4" fill="#0f766e"/>
+  </g>
+</svg>
