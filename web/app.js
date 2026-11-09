@@ -64,7 +64,7 @@
       v: 1,
       words: {},
       days: {},
-      settings: { dailyNew: 15, dailyGoal: 20 },
+      settings: { dailyNew: 15, dailyGoal: 20, decks: TOPICS.map((t) => t.id) },
       session: null,
       quiz: null,
       lastSession: null,
@@ -138,6 +138,19 @@
     return rec;
   }
 
+  /* ---------- 词库选择 ---------- */
+
+  function activeDecks() {
+    const picked = S.settings.decks;
+    if (!Array.isArray(picked)) return TOPICS.map((t) => t.id);
+    return picked.filter((id) => TOPIC_MAP.has(id));
+  }
+
+  function deckWords() {
+    const set = new Set(activeDecks());
+    return WORDS.filter((w) => set.has(w.t));
+  }
+
   /* ---------- 统计 ---------- */
 
   function stats() {
@@ -187,7 +200,7 @@
       streak += 1;
       d0 = addDays(d0, -1);
     }
-    const total = WORDS.length;
+    const total = deckWords().length;
     return {
       today: { new: d.new || 0, review: d.review || 0, total: (d.new || 0) + (d.review || 0) },
       newLeft: Math.max(0, S.settings.dailyNew - (d.new || 0)),
@@ -213,7 +226,8 @@
   function buildQueue(mode = 'daily') {
     const day = today();
     const rnd = mulberry32(dayNum(day) + 17);
-    const due = WORDS.filter((w) => {
+    const pool = deckWords();
+    const due = pool.filter((w) => {
       const r = S.words[w.w];
       return r && r.seen && r.due <= day;
     })
@@ -225,13 +239,13 @@
       .slice(0, 40);
     const todayNew = (S.days[day] && S.days[day].new) || 0;
     const cap = Math.max(0, S.settings.dailyNew - todayNew);
-    const unseen = WORDS.filter((w) => !S.words[w.w] || !S.words[w.w].seen);
+    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen);
     const newPicked = shuffle(unseen, rnd).slice(0, mode === 'extra' ? 10 : cap);
 
     if (mode === 'review') return { queue: due.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: due.length };
     if (mode === 'new' || mode === 'extra') return { queue: newPicked.map((w) => ({ w: w.w, kind: 'new' })), newCount: newPicked.length, reviewCount: 0 };
     if (mode === 'drill') {
-      const seen = WORDS.filter((w) => S.words[w.w] && S.words[w.w].seen);
+      const seen = pool.filter((w) => S.words[w.w] && S.words[w.w].seen);
       const picked = shuffle(seen, rnd).slice(0, 10);
       return { queue: picked.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: picked.length };
     }
@@ -345,7 +359,7 @@
   }
 
   function makeItem(word, kind, pool) {
-    const safePool = pool.length >= 4 ? pool : WORDS;
+    const safePool = pool.length >= 4 ? pool : deckWords();
     if (kind === 'zh') {
       const others = sample(safePool.filter((w) => w.w !== word.w && w.zh !== word.zh), 3);
       const opts = shuffle([word.zh, ...others.map((w) => w.zh)]);
@@ -371,11 +385,12 @@
   }
 
   function startQuiz(kind) {
-    const seen = WORDS.filter((w) => S.words[w.w] && S.words[w.w].seen);
+    const all = deckWords();
+    const seen = all.filter((w) => S.words[w.w] && S.words[w.w].seen);
     let pool;
     let picked;
     if (kind === 'wrong') {
-      pool = WORDS.filter((w) => {
+      pool = all.filter((w) => {
         const r = S.words[w.w];
         return r && r.seen && r.wrong > 0 && r.box < MASTER_BOX;
       });
@@ -385,7 +400,7 @@
         return;
       }
     } else {
-      pool = seen.length >= 10 ? seen : WORDS;
+      pool = seen.length >= 10 ? seen : all;
       picked = sample(pool, Math.min(10, pool.length));
       if (picked.length < 4) {
         toast('词库太小，先学几个词吧');
@@ -469,6 +484,13 @@
   function topbarHTML() {
     if (S.ui.screen === 'settings') {
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">设置</div><div class="top-sub">学习节奏与数据</div></div></div>`;
+    }
+    if (S.ui.screen === 'decks') {
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">学习范围</div><div class="top-sub">${activeDecks().length} / ${TOPICS.length} 个词库</div></div></div>`;
+    }
+    if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) {
+      const tt = TOPIC_MAP.get(S.ui.screen.slice(6));
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${esc(tt ? tt.zh : '词表')}</div><div class="top-sub">${topicList(S.ui.screen.slice(6)).length} 词</div></div></div>`;
     }
     if (S.ui.screen === 'wrong') {
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">错词本</div><div class="top-sub">${stats().wrong.length} 个待巩固</div></div></div>`;
@@ -628,6 +650,9 @@
       </div>
 
       <button class="btn primary" data-act="start"><span class="ico">${svg('play')}</span>${label}</button>
+      <button class="btn ghost sm scope" data-act="open:decks">
+        <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${WORDS.filter((w) => activeDecks().indexOf(w.t) >= 0).length} 词</b>
+      </button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:quiz">快速测验</button>
         <button class="btn ghost sm" data-act="open:wrong">错词本 ${st.wrong.length}</button>
@@ -852,18 +877,97 @@
         <div class="topics">
           ${st.topics
             .map(
-              (t) => `<div class="topic">
-                <div class="topic-top"><span style="color:var(--text);font-weight:650">${esc(t.zh)}</span><span>${t.mastered} / ${t.total}</span></div>
+              (t) => `<div class="topic tappable" data-act="words:${t.id}">
+                <div class="topic-top"><span style="color:var(--text);font-weight:650">${esc(t.zh)}${activeDecks().indexOf(t.id) >= 0 ? '' : ' <span class="off">未选</span>'}</span><span>${t.mastered} / ${t.total} ›</span></div>
                 <div class="tbar"><i style="width:${t.total ? Math.round((t.mastered / t.total) * 100) : 0}%"></i></div>
               </div>`
             )
             .join('')}
         </div>
       </section>
-      <div class="row2">
+      <div class="row3">
+        <button class="btn ghost sm" data-act="open:decks">学习范围</button>
         <button class="btn ghost sm" data-act="open:wrong">错词本 ${st.wrong.length}</button>
         <button class="btn ghost sm" data-act="open:settings">设置</button>
       </div>
+    </div>`;
+  }
+
+  /* ---------- 词库选择 / 词表浏览 ---------- */
+
+  let wordsView = { topic: '', q: '', limit: 60 };
+
+  function topicList(id) {
+    return WORDS.filter((w) => w.t === id);
+  }
+
+  function decksScreen() {
+    const picked = new Set(activeDecks());
+    const st = stats();
+    const rows = TOPICS.map((t) => {
+      const total = topicList(t.id).length;
+      const row = st.topics.find((x) => x.id === t.id) || { mastered: 0 };
+      const on = picked.has(t.id);
+      return `<div class="deck ${on ? 'on' : ''}">
+        <button class="deck-main" data-act="deck:${t.id}">
+          <span class="deck-box">${on ? '✓' : ''}</span>
+          <span class="deck-txt"><b>${esc(t.zh)}</b><small>${total} 词 · 已掌握 ${row.mastered}</small></span>
+        </button>
+        <button class="deck-go" data-act="words:${t.id}">词表 ›</button>
+      </div>`;
+    }).join('');
+    const n = picked.size;
+    return `<div class="screen">
+      <h1>学习范围</h1>
+      <p class="small muted">勾选的词库会进入「今天」「学习」和「测验」；词表随时可以翻阅，不受勾选影响。</p>
+      <div class="row2">
+        <button class="btn ghost sm" data-act="deck-all">全选 ${TOPICS.length}</button>
+        <button class="btn ghost sm" data-act="deck-none">全不选</button>
+      </div>
+      <section class="card"><div class="decks">${rows}</div></section>
+      <p class="small muted center">已选 ${n} / ${TOPICS.length} 个词库 · 共 ${deckWords().length} 词</p>
+      <button class="btn primary" data-act="back">完成</button>
+    </div>`;
+  }
+
+  function wordRow(w) {
+    const r = S.words[w.w];
+    const state = r && r.seen ? (r.box >= MASTER_BOX ? ' mastered' : ' learning') : '';
+    return `<div class="wrow${state}">
+      <div class="wrow-top"><b>${esc(w.w)}</b><span class="wipa">${esc(w.ipa || '')}</span></div>
+      <div class="wzh">${esc(w.pos || '')} ${esc(w.zh)}</div>
+    </div>`;
+  }
+
+  function wordsListHTML() {
+    const list = topicList(wordsView.topic);
+    const q = (wordsView.q || '').trim().toLowerCase();
+    const filtered = q ? list.filter((w) => w.w.toLowerCase().indexOf(q) >= 0 || (w.zh || '').indexOf(q) >= 0) : list;
+    const shown = filtered.slice(0, wordsView.limit);
+    if (!filtered.length) return '<p class="small muted center">没有匹配的词</p>';
+    return `<div class="wcount">${q ? '匹配 ' : '共 '}${filtered.length} 词</div>
+      <div class="wlist">${shown.map(wordRow).join('')}</div>
+      ${filtered.length > shown.length
+        ? `<button class="btn ghost sm" data-act="words-more">加载更多（还有 ${filtered.length - shown.length}）</button>`
+        : ''}`;
+  }
+
+  function renderWordList() {
+    const el = document.getElementById('wlist');
+    if (el) el.innerHTML = wordsListHTML();
+  }
+
+  function wordsScreen(id) {
+    const t = TOPIC_MAP.get(id);
+    const total = t ? topicList(id).length : 0;
+    const st = stats();
+    const row = st.topics.find((x) => x.id === id) || { mastered: 0 };
+    return `<div class="screen">
+      <h1>${esc(t ? t.zh : '词表')}</h1>
+      <p class="small muted">共 ${total} 词 · 已掌握 ${row.mastered}${t && t.en ? ' · ' + esc(t.en) : ''}</p>
+      <div class="wsearch"><input id="wq" type="search" placeholder="搜索单词或中文释义" value="${esc(wordsView.q || '')}" autocomplete="off" spellcheck="false"></div>
+      <div id="wlist">${wordsListHTML()}</div>
+      <button class="btn ghost" data-act="open:decks">切换学习范围</button>
     </div>`;
   }
 
@@ -933,6 +1037,8 @@
 
   function screenHTML() {
     if (S.ui.screen === 'settings') return settingsScreen();
+    if (S.ui.screen === 'decks') return decksScreen();
+    if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) return wordsScreen(S.ui.screen.slice(6));
     if (S.ui.screen === 'wrong') return wrongScreen();
     if (S.ui.tab === 'study') return studyScreen();
     if (S.ui.tab === 'quiz') return quizScreen();
@@ -973,6 +1079,13 @@
     render();
     toast('错词记录已清空');
   }
+
+  document.addEventListener('input', (e) => {
+    if (!e.target || e.target.id !== 'wq') return;
+    wordsView.q = e.target.value;
+    wordsView.limit = 60;
+    renderWordList();
+  });
 
   document.addEventListener('click', (e) => {
     const el = e.target.closest('[data-act]');
@@ -1078,6 +1191,37 @@
         updateState = '';
         save();
         render();
+        break;
+      case 'deck': {
+        const cur = activeDecks().slice();
+        const i = cur.indexOf(arg);
+        if (i >= 0) cur.splice(i, 1); else cur.push(arg);
+        S.settings.decks = TOPICS.map((t) => t.id).filter((id) => cur.indexOf(id) >= 0);
+        save();
+        render();
+        break;
+      }
+      case 'deck-all':
+        S.settings.decks = TOPICS.map((t) => t.id);
+        save();
+        render();
+        break;
+      case 'deck-none':
+        S.settings.decks = [];
+        save();
+        render();
+        break;
+      case 'words':
+        wordsView = { topic: arg, q: '', limit: 60 };
+        S.ui.screen = 'words:' + arg;
+        S.ui.confirm = null;
+        save();
+        render();
+        window.scrollTo(0, 0);
+        break;
+      case 'words-more':
+        wordsView.limit += 60;
+        renderWordList();
         break;
       case 'check-update':
         toast('正在检查更新…');

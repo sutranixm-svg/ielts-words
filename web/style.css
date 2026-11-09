@@ -56,6 +56,7 @@ h3{font-size:14px;margin:0;letter-spacing:.2px;font-weight:700}
 .gap6{display:flex;flex-direction:column;gap:6px}
 .row{display:flex;align-items:center;justify-content:space-between;gap:10px}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px}
 
 .card{background:var(--card);border:1px solid var(--line);border-radius:var(--r);padding:16px}
 .card-head{display:flex;justify-content:space-between;align-items:center;font-size:13px;font-weight:650;margin-bottom:12px}
@@ -211,5 +212,39 @@ h3{font-size:14px;margin:0;letter-spacing:.2px;font-weight:700}
 .ub-body b{font-size:14px;font-weight:700}
 .ub-body span{font-size:11px;color:var(--muted);line-height:1.35}
 .ub-state{font-size:13px;font-weight:650;color:var(--accent);white-space:nowrap}
-.btn.xs{height:34px;padding:0 14px;font-size:13px;border-radius:11px;flex:none}
+.btn.xs{height:34px;width:auto;padding:0 14px;font-size:13px;border-radius:11px;flex:none}
 .icon-btn.xs{width:26px;height:26px;border-radius:9px;font-size:15px;background:transparent;border:none;color:var(--dim)}
+
+/* 学习范围入口 */
+.scope{display:flex;align-items:center;justify-content:space-between;width:100%;margin-bottom:10px}
+.scope span{color:var(--muted);font-size:13px;font-weight:500}
+.scope b{font-size:13px;font-weight:650;color:var(--accent)}
+
+/* 词库勾选列表 */
+.decks{display:flex;flex-direction:column;gap:2px}
+.deck{display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--line);padding:2px 0}
+.deck:last-child{border-bottom:none}
+.deck-main{flex:1;display:flex;align-items:center;gap:11px;background:none;border:none;padding:11px 0;font-family:inherit;color:var(--text);text-align:left;cursor:pointer}
+.deck-box{width:22px;height:22px;flex:none;border-radius:7px;border:1.5px solid var(--line);display:grid;place-items:center;font-size:13px;color:var(--ink);font-weight:800}
+.deck.on .deck-box{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent}
+.deck-txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+.deck-txt b{font-size:14px;font-weight:650}
+.deck-txt small{font-size:11px;color:var(--muted)}
+.deck-go{flex:none;background:none;border:none;font-family:inherit;font-size:12px;color:var(--accent);padding:8px 4px;cursor:pointer}
+.off{color:var(--dim);font-size:11px;font-weight:500}
+
+/* 词表浏览 */
+.wsearch{margin:12px 0}
+.wsearch input{width:100%;height:46px;border-radius:14px;border:1px solid var(--line);background:var(--card);color:var(--text);
+  font-family:inherit;font-size:15px;padding:0 14px;outline:none;-webkit-appearance:none}
+.wsearch input:focus{border-color:rgba(45,212,191,.55)}
+.wcount{font-size:12px;color:var(--muted);margin:2px 2px 8px}
+.wlist{display:flex;flex-direction:column}
+.wrow{padding:11px 4px;border-bottom:1px solid var(--line)}
+.wrow:last-child{border-bottom:none}
+.wrow-top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+.wrow-top b{font-size:16px;font-weight:700;letter-spacing:.2px}
+.wipa{font-size:12px;color:var(--dim);font-family:ui-monospace,Menlo,monospace}
+.wzh{font-size:13px;color:var(--muted);margin-top:3px;line-height:1.45}
+.wrow.learning .wrow-top b{color:var(--warn)}
+.wrow.mastered .wrow-top b{color:var(--accent)}
