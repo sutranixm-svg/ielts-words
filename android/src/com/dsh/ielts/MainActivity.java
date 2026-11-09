@@ -86,6 +86,24 @@ public class MainActivity extends Activity {
         public String platform() {
             return "android";
         }
+
+        /** 用系统浏览器打开外部链接（外刊原文）。 */
+        @JavascriptInterface
+        public void openUrl(final String url) {
+            if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
+                        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                        startActivity(i);
+                    } catch (Exception e) {
+                        Toast.makeText(MainActivity.this, "打不开链接", Toast.LENGTH_SHORT).show();
+                    }
+                }
+            });
+        }
     }
 
     private void download(String url) {

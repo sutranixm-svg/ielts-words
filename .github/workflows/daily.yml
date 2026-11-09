@@ -1,0 +1,55 @@
+name: 每日外刊
+
+on:
+  schedule:
+    # 每天 23:00 UTC = 北京时间 07:00
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-articles
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 抓取并翻译
+        run: python3 tools/collect_articles.py
+
+      - name: 校验产物
+        run: |
+          python3 - <<'EOF'
+          import json, sys
+          d = json.load(open('data/articles.json', encoding='utf-8'))
+          items = d.get('items') or []
+          print(f"items={len(items)} generated={d.get('generated')}")
+          assert len(items) == 10, f"期望 10 条，实际 {len(items)}"
+          zh = sum(1 for i in items if i.get('title_zh'))
+          print(f"已翻译标题 {zh}/{len(items)}")
+          assert all(i.get('url') and i.get('title') for i in items), "缺 url/title"
+          if zh < 10:
+              print("::warning::部分条目未翻译，检查翻译端点")
+          EOF
+
+      - name: 提交
+        run: |
+          git config user.name "articles-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add data/articles.json
+          if git diff --cached --quiet; then
+            echo "内容无变化，跳过提交"
+          else
+            git commit -m "chore: 每日外刊 $(date -u +%Y-%m-%d)"
+            git push
+          fi

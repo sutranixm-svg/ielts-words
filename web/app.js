@@ -13,6 +13,9 @@
   const REPO = 'sutranixm-svg/ielts-words';
   const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
+  const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
+  const NEWS_TTL = 6 * 3600 * 1000;
+  const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
 
   /* ---------- 基础工具 ---------- */
 
@@ -70,6 +73,7 @@
       lastSession: null,
       update: null,
       seenUpdate: '',
+      news: { fetched: '', items: [] },
       ui: { tab: 'today', screen: null, confirm: null },
     };
   }
@@ -84,6 +88,7 @@
       words: o.words && typeof o.words === 'object' ? o.words : {},
       days: o.days && typeof o.days === 'object' ? o.days : {},
       settings: { ...base.settings, ...(o.settings || {}) },
+      news: o.news && Array.isArray(o.news.items) ? o.news : base.news,
       ui: { ...base.ui, ...(o.ui || {}) },
     };
   }
@@ -454,6 +459,7 @@
     library: '<path d="M5 4.5h8A3.5 3.5 0 0 1 16.5 8v12H8.5A3.5 3.5 0 0 1 5 16.5z"/><path d="M5 16.5A3.5 3.5 0 0 1 8.5 13h8"/>',
     play: '<path d="M8 5.5 18 12 8 18.5z"/>',
     spark: '<path d="M12 3v4M12 17v4M3 12h4M17 12h4M6 6l2.5 2.5M15.5 15.5 18 18M18 6l-2.5 2.5M8.5 15.5 6 18"/>',
+    news: '<path d="M4 6.5A2.5 2.5 0 0 1 6.5 4H18a2 2 0 0 1 2 2v11a3 3 0 0 0-3 3H6.5A2.5 2.5 0 0 1 4 17.5z"/><path d="M8 8.5h8M8 12h8M8 15.5h4"/>',
   };
   const svg = (name, cls = '') => `<svg class="${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
 
@@ -492,6 +498,9 @@
       const tt = TOPIC_MAP.get(S.ui.screen.slice(6));
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${esc(tt ? tt.zh : '词表')}</div><div class="top-sub">${topicList(S.ui.screen.slice(6)).length} 词</div></div></div>`;
     }
+    if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('news:') === 0) {
+      return `<div class="back"><button class="icon-btn" data-act="news-back" aria-label="返回">←</button><div><div class="top-title">外刊精读</div><div class="top-sub">中英对照</div></div></div>`;
+    }
     if (S.ui.screen === 'wrong') {
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">错词本</div><div class="top-sub">${stats().wrong.length} 个待巩固</div></div></div>`;
     }
@@ -509,10 +518,12 @@
   function tabbarHTML() {
     let active = S.ui.tab;
     if (S.ui.screen === 'settings' || S.ui.screen === 'wrong') active = 'library';
+    if (S.ui.screen === 'decks' || (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0)) active = 'library';
     const tabs = [
       ['today', '今天'],
       ['study', '学习'],
       ['quiz', '测验'],
+      ['news', '外刊'],
       ['library', '词库'],
     ];
     return `<div class="tabbar-inner">${tabs
@@ -893,6 +904,109 @@
     </div>`;
   }
 
+  /* ---------- 每日外刊 ---------- */
+
+  let newsBusy = false;
+
+  function newsAge() {
+    const t = Date.parse(S.news.fetched || '');
+    return isNaN(t) ? Infinity : Date.now() - t;
+  }
+
+  function relTime(iso) {
+    const t = Date.parse(iso || '');
+    if (isNaN(t)) return '';
+    const mins = Math.round((Date.now() - t) / 60000);
+    if (mins < 60) return mins <= 1 ? '刚刚' : mins + ' 分钟前';
+    const hrs = Math.round(mins / 60);
+    if (hrs < 24) return hrs + ' 小时前';
+    const days = Math.round(hrs / 24);
+    return days <= 1 ? '昨天' : days + ' 天前';
+  }
+
+  function fetchNews(manual) {
+    if (newsBusy) return;
+    if (!window.fetch) return;
+    newsBusy = true;
+    fetch(NEWS_URL + '?t=' + Date.now(), { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => {
+        const items = Array.isArray(j && j.items) ? j.items : [];
+        if (!items.length) throw new Error('empty');
+        S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items };
+        save();
+        newsBusy = false;
+        render();
+        if (manual) toast('已更新 ' + items.length + ' 篇');
+      })
+      .catch(() => {
+        newsBusy = false;
+        render();
+        if (manual) toast('外刊更新失败，稍后再试');
+      });
+  }
+
+  function newsCard(it) {
+    const cat = CAT_LABEL[it.cat] || it.cat || '';
+    return `<button class="ncard" data-act="news-open:${esc(it.id)}">
+      <div class="nrow">
+        <span class="ncat c-${esc(it.cat || 'other')}">${esc(cat)}</span>
+        <span class="nsrc">${esc(it.src || '')} · ${esc(relTime(it.pub))}</span>
+      </div>
+      <div class="ntitle">${esc(it.title)}</div>
+      ${it.title_zh ? `<div class="ntitle-zh">${esc(it.title_zh)}</div>` : ''}
+    </button>`;
+  }
+
+  function newsScreen() {
+    const items = (S.news && S.news.items) || [];
+    const empty = !items.length;
+    const head = `<div class="news-head">
+      <span>${empty ? '还没有数据' : `${items.length} 篇 · 更新于 ${esc(relTime(S.news.fetched))}`}</span>
+      <button class="btn ghost xs" data-act="news-refresh">${newsBusy ? '更新中…' : '刷新'}</button>
+    </div>`;
+    if (empty) {
+      return `<div class="screen">
+        <h1>外刊精读</h1>
+        ${head}
+        <p class="small muted">每天北京时间 07:00 自动抓取科技、财经、生活、文娱各领域的最新英文报道，配中文对照。首次使用需要联网拉取一次。</p>
+        <p class="small muted">内容只保存标题与摘要，正文请点原文链接到发布方站点阅读。</p>
+      </div>`;
+    }
+    return `<div class="screen">
+      <h1>外刊精读</h1>
+      ${head}
+      <div class="nlist">${items.map(newsCard).join('')}</div>
+      <p class="small muted center">标题与摘要来自各媒体 RSS，版权归原作者；点开可读原文。</p>
+    </div>`;
+  }
+
+  function newsDetailScreen(id) {
+    const items = (S.news && S.news.items) || [];
+    const it = items.find((x) => x.id === id);
+    if (!it) return newsScreen();
+    const cat = CAT_LABEL[it.cat] || it.cat || '';
+    return `<div class="screen">
+      <div class="nrow">
+        <span class="ncat c-${esc(it.cat || 'other')}">${esc(cat)}</span>
+        <span class="nsrc">${esc(it.src || '')} · ${esc(relTime(it.pub))}</span>
+      </div>
+      <h1 class="dtitle">${esc(it.title)}</h1>
+      ${it.title_zh ? `<div class="dtitle-zh">${esc(it.title_zh)}</div>` : ''}
+      <div class="dblock">
+        <div class="dlab">SUMMARY</div>
+        <p class="den">${esc(it.summary || '')}</p>
+      </div>
+      ${it.summary_zh ? `<div class="dblock zh">
+        <div class="dlab">中文对照</div>
+        <p class="dzh">${esc(it.summary_zh)}</p>
+      </div>` : ''}
+      <button class="btn primary" data-act="news-src:${esc(it.id)}">读原文</button>
+      <button class="btn ghost" data-act="news-back">返回列表</button>
+      <p class="small muted center">摘要约 ${it.words || 0} 个英文词</p>
+    </div>`;
+  }
+
   /* ---------- 词库选择 / 词表浏览 ---------- */
 
   let wordsView = { topic: '', q: '', limit: 60 };
@@ -1042,6 +1156,11 @@
     if (S.ui.screen === 'wrong') return wrongScreen();
     if (S.ui.tab === 'study') return studyScreen();
     if (S.ui.tab === 'quiz') return quizScreen();
+    if (S.ui.tab === 'news') {
+      const sc = S.ui.screen;
+      if (typeof sc === 'string' && sc.indexOf('news:') === 0) return newsDetailScreen(sc.slice(5));
+      return newsScreen();
+    }
     if (S.ui.tab === 'library') return libraryScreen();
     return todayScreen();
   }
@@ -1101,6 +1220,7 @@
         save();
         render();
         window.scrollTo(0, 0);
+        if (arg === 'news' && ((S.news && S.news.items || []).length === 0 || newsAge() > NEWS_TTL)) fetchNews(false);
         break;
       case 'back':
         S.ui.screen = null;
@@ -1223,6 +1343,28 @@
         wordsView.limit += 60;
         renderWordList();
         break;
+      case 'news-refresh':
+        toast('正在拉取最新外刊…');
+        fetchNews(true);
+        break;
+      case 'news-open':
+        S.ui.screen = 'news:' + arg;
+        save();
+        render();
+        window.scrollTo(0, 0);
+        break;
+      case 'news-back':
+        S.ui.screen = null;
+        save();
+        render();
+        break;
+      case 'news-src': {
+        const it = ((S.news && S.news.items) || []).find((x) => x.id === arg);
+        if (!it) break;
+        if (window.App && window.App.openUrl) window.App.openUrl(it.url);
+        else toast('请在浏览器打开：' + it.url);
+        break;
+      }
       case 'check-update':
         toast('正在检查更新…');
         checkUpdate(true);
@@ -1235,6 +1377,7 @@
   window.addEventListener('load', render);
   render();
   setTimeout(function () { checkUpdate(false); }, 1500);
+  setTimeout(function () { if (newsAge() > NEWS_TTL) fetchNews(false); }, 3500);
 
   // 系统返回键：先关弹层/子页，再回今天，最后才退出
   window.__ieltsBack = function () {
