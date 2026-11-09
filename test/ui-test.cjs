@@ -37,7 +37,7 @@ const assert = (cond, msg) => {
 setTimeout(() => {
   try {
     assert(text().includes('今日目标'), 'today screen renders');
-    assert(doc.querySelectorAll('.tab').length === 4, 'four tabs');
+    assert(doc.querySelectorAll('.tab').length === 5, 'five tabs');
 
     click('[data-act="start"]');
     assert(doc.querySelector('.flash .word'), 'study card shows a word');
