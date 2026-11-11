@@ -19,7 +19,14 @@ const dom = new JSDOM(html, {
   beforeParse(window) {
     window.scrollTo = () => {};
     window.fetch = () => new Promise(() => {});
-    window.App = { version: () => '1.6.0', installUpdate: () => {}, openUrl: () => {}, platform: () => 'android' };
+    window.__rec = { asset: [], url: [], tts: [] };
+    window.App = {
+      version: () => '1.9.0', installUpdate: () => {}, openUrl: () => {}, platform: () => 'android',
+      playAsset: (n) => { window.__rec.asset.push(n); return true; },
+      playUrl: (u) => { window.__rec.url.push(u); },
+      speakText: (t) => { window.__rec.tts.push(t); },
+      hasTts: () => true,
+    };
     window.speechSynthesis = {
       cancel: () => {},
       speak: (u) => spoken.push(u.text),
@@ -62,18 +69,27 @@ setTimeout(() => {
     click('[data-act="tab:today"]');
     click('[data-act^="start"]');
     assert(Boolean(doc.querySelector('.flash .say')), '单词卡有发音按钮');
-    // 内置音频词：直接构造一个 say 动作，走的是委托监听器
+    // 有内置录音的词 → 原生播放器播 assets
     doc.body.insertAdjacentHTML('beforeend', '<button id="tsay" data-act="say:academic">t</button>');
     doc.getElementById('tsay').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    assert(window.__played[0] === 'audio/academic.mp3', '有真人录音时优先播本地文件：' + window.__played[0]);
-    // 没有内置音频的词：退回系统 TTS
-    doc.body.insertAdjacentHTML('beforeend', '<button id="tsay2" data-act="say:zzzzz">t</button>');
+    assert(window.__rec.asset[0] === 'audio/academic.mp3', '有录音走原生 asset 播放：' + window.__rec.asset[0]);
+    // 没有内置录音的词 → 联网真人发音（默认开）
+    doc.body.insertAdjacentHTML('beforeend', '<button id="tsay2" data-act="say:zzzznotaword">t</button>');
     doc.getElementById('tsay2').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    assert(spoken.length === 1 && spoken[0] === 'zzzzz', '没有录音时退回语音合成：' + spoken[0]);
+    assert((window.__rec.url[0] || '').indexOf('dictvoice') > 0, '无录音时走联网发音');
+    // 关掉联网 → 走系统语音
     click('[data-act="pause"]');
+    click('[data-act="tab:library"]');
+    click('[data-act="open:settings"]');
+    click('[data-act="set-audio:0"]');
+    click('[data-act="back"]');
+    doc.body.insertAdjacentHTML('beforeend', '<button id="tsay3" data-act="say:zzzznotaword">t</button>');
+    doc.getElementById('tsay3').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    assert(window.__rec.tts[0] === 'zzzznotaword', '关联网后走系统语音：' + window.__rec.tts[0]);
     S().session = null;
 
     /* ---------- 口语 ---------- */
+    click('[data-act="tab:study"]');
     click('[data-act="tab:study"]');
     click('[data-act="open:speaking"]');
     assert(doc.querySelectorAll('.cue').length === 18, '口语有 18 张话题卡');

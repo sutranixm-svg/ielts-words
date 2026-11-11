@@ -76,7 +76,7 @@
       v: 1,
       words: {},
       days: {},
-      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', onlineAudio: false, decks: TOPICS.map((t) => t.id) },
+      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', onlineAudio: true, decks: TOPICS.map((t) => t.id) },
       session: null,
       quiz: null,
       lastSession: null,
@@ -740,6 +740,17 @@
   window.__updateStatus = function (status) {
     updateState = String(status || '');
     if (updateState === 'installing') toast('安装包就绪，按提示完成安装');
+    if (updateState === 'audiofail') {
+      // 原生播放失败：先退回系统语音，再失败就明确告诉用户
+      if (!audioFailed) {
+        audioFailed = true;
+        if (window.App && window.App.speakText) window.App.speakText(lastSay);
+        else speak(lastSay);
+      } else {
+        toast('这个词发音放不出来，换个词试试');
+      }
+      return;
+    }
     if (updateState.indexOf('mirror') === 0) toast('直链不通，换第 ' + (updateState.split(':')[1] || 1) + ' 个镜像…');
     if (updateState.indexOf('error:') === 0) toast('更新失败：' + updateState.slice(6));
     render();
@@ -753,31 +764,43 @@
     return 'audio/' + String(word).toLowerCase().replace(/[^a-z0-9_-]/g, '_') + '.mp3';
   }
 
-  /** 读单词：有内置真人音频就播，否则按设置联网取，再不行退系统 TTS。 */
+  /** 读单词：优先内置真人录音，其次联网音频（可选），最后系统语音。 */
+  let lastSay = '';
+  let audioFailed = false;
+
   function say(word) {
+    lastSay = String(word || '');
+    audioFailed = false;
     const w = WORD_MAP.get(word);
-    const player = new Audio();
-    let settled = false;
-    function fallback(fromAudio) {
-      if (settled) return;
-      settled = true;
-      if (fromAudio && S.settings.onlineAudio) {
-        const net = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2');
-        net.onerror = function () { speak(word); };
-        net.play().catch(function () { speak(word); });
+    const online = S.settings.onlineAudio;
+
+    // 原生播放器最可靠；浏览器里没有 App 桥接时退回 HTML5 / speechSynthesis
+    if (window.App && window.App.playAsset) {
+      if (w && w.a && window.App.playAsset(audioFile(word))) return;
+      if (online && window.App.playUrl) {
+        window.App.playUrl('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2');
         return;
       }
-      speak(word);
+      if (window.App.speakText) {
+        window.App.speakText(word);
+        return;
+      }
     }
-    player.onerror = function () { fallback(true); };
-    player.onended = function () { settled = true; };
     if (w && w.a) {
-      player.src = audioFile(word);
-      const pr = player.play();
-      if (pr && pr.catch) pr.catch(function () { fallback(true); });
-    } else {
-      fallback(true);
+      try {
+        const a = new Audio(audioFile(word));
+        a.play().catch(function () { speak(word); });
+        return;
+      } catch (e) { /* 落到 TTS */ }
     }
+    if (online) {
+      try {
+        const a = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2');
+        a.play().catch(function () { speak(word); });
+        return;
+      } catch (e) { /* 落到 TTS */ }
+    }
+    speak(word);
   }
 
   function speak(text, rate) {

@@ -4,7 +4,12 @@ import android.app.Activity;
 import android.Manifest;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.content.res.AssetFileDescriptor;
+import android.media.AudioAttributes;
+import android.media.MediaPlayer;
 import android.media.MediaRecorder;
+import android.speech.tts.TextToSpeech;
+import java.util.Locale;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -35,6 +40,9 @@ public class MainActivity extends Activity {
     private WebView web;
     private boolean dark;
     private MediaRecorder recorder;
+    private MediaPlayer player;
+    private TextToSpeech tts;
+    private boolean ttsReady;
     private String recordName;
     private static final int REQ_MIC = 1001;
 
@@ -61,8 +69,99 @@ public class MainActivity extends Activity {
         s.setMediaPlaybackRequiresUserGesture(false);
         web.setWebViewClient(new WebViewClient());
         web.addJavascriptInterface(new Bridge(), "App");
+        tts = new TextToSpeech(this, new TextToSpeech.OnInitListener() {
+            @Override
+            public void onInit(int status) {
+                if (status == TextToSpeech.SUCCESS) {
+                    int r = tts.setLanguage(Locale.US);
+                    ttsReady = r != TextToSpeech.LANG_MISSING_DATA && r != TextToSpeech.LANG_NOT_SUPPORTED;
+                }
+            }
+        });
         web.loadUrl("file:///android_asset/index.html");
         setContentView(web);
+    }
+
+    private void playFile(AssetFileDescriptor afd) {
+        stopPlayer();
+        try {
+            player = new MediaPlayer();
+            player.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
+            if (afd != null) {
+                player.setDataSource(afd.getFileDescriptor(), afd.getStartOffset(), afd.getLength());
+                afd.close();
+            }
+            player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    stopPlayer();
+                }
+            });
+            player.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(MediaPlayer mp, int what, int extra) {
+                    stopPlayer();
+                    emit("audiofail");
+                    return true;
+                }
+            });
+            player.prepare();
+            player.start();
+        } catch (Exception e) {
+            stopPlayer();
+            emit("audiofail");
+        }
+    }
+
+    private void playUrl(final String url) {
+        stopPlayer();
+        try {
+            player = new MediaPlayer();
+            player.setAudioAttributes(new AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
+            player.setDataSource(url);
+            player.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
+                @Override
+                public void onPrepared(MediaPlayer mp) {
+                    mp.start();
+                }
+            });
+            player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer mp) {
+                    stopPlayer();
+                }
+            });
+            player.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(MediaPlayer mp, int what, int extra) {
+                    stopPlayer();
+                    emit("audiofail");
+                    return true;
+                }
+            });
+            player.prepareAsync();
+        } catch (Exception e) {
+            stopPlayer();
+            emit("audiofail");
+        }
+    }
+
+    private void stopPlayer() {
+        if (player != null) {
+            try {
+                if (player.isPlaying()) player.stop();
+            } catch (Exception ignored) {
+            }
+            try {
+                player.release();
+            } catch (Exception ignored) {
+            }
+            player = null;
+        }
     }
 
     /** 暴露给网页的最小接口：版本号 + 下载安装。 */
@@ -133,6 +232,44 @@ public class MainActivity extends Activity {
         }
 
         /** 用系统浏览器打开外部链接（外刊原文）。 */
+        @JavascriptInterface
+        public boolean playAsset(String name) {
+            if (name == null || name.contains("..")) return false;
+            try {
+                AssetFileDescriptor afd = getAssets().openFd(name);
+                playFile(afd);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        @JavascriptInterface
+        public void playUrl(String url) {
+            if (url == null || !(url.startsWith("http://") || url.startsWith("https://"))) return;
+            MainActivity.this.playUrl(url);
+        }
+
+        @JavascriptInterface
+        public boolean hasTts() {
+            return ttsReady;
+        }
+
+        @JavascriptInterface
+        public void speakText(String text) {
+            if (!ttsReady || text == null) {
+                emit("audiofail");
+                return;
+            }
+            tts.speak(text, TextToSpeech.QUEUE_FLUSH, null);
+        }
+
+        @JavascriptInterface
+        public void stopAudio() {
+            stopPlayer();
+            if (tts != null) tts.stop();
+        }
+
         @JavascriptInterface
         public void openUrl(final String url) {
             if (url == null || !(url.startsWith("https://") || url.startsWith("http://"))) return;
@@ -341,6 +478,11 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        stopPlayer();
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
         if (recorder != null) endRecord();
         if (web != null) {
             web.destroy();
