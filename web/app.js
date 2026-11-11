@@ -594,9 +594,10 @@
       const tt = TRAIN_TITLE[S.ui.screen];
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${tt[0]}</div><div class="top-sub">${tt[1]}</div></div></div>`;
     }
-    if (typeof S.ui.screen === 'string' && (S.ui.screen.indexOf('cue:') === 0 || S.ui.screen.indexOf('wtop:') === 0)) {
+    if (typeof S.ui.screen === 'string' && (S.ui.screen.indexOf('cue:') === 0 || S.ui.screen.indexOf('wtop:') === 0 || S.ui.screen.indexOf('read:') === 0)) {
       const isCue = S.ui.screen.indexOf('cue:') === 0;
-      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${isCue ? '口语 Part 2' : '写作 Task 2'}</div><div class="top-sub">${isCue ? '计时练习' : '草稿只存本机'}</div></div></div>`;
+      const isRead = S.ui.screen.indexOf('read:') === 0;
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${isCue ? '口语 Part 2' : isRead ? '阅读练习' : '写作 Task 2'}</div><div class="top-sub">${isCue ? '计时练习' : isRead ? '原创模拟题' : '草稿只存本机'}</div></div></div>`;
     }
     if (S.ui.screen === 'decks') {
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">学习范围</div><div class="top-sub">${activeDecks().length} / ${TOPICS.length} 个词库</div></div></div>`;
@@ -1386,6 +1387,34 @@
   ];
 
   let speakTimer = null;
+  let recState = { recording: false, url: '' };
+
+  function startRecord() {
+    if (!window.App || !window.App.startRecord) { toast('当前版本不支持录音'); return; }
+    const ok = window.App.startRecord();
+    if (!ok) { toast('需要麦克风权限：授权后再点一次'); return; }
+    recState.recording = true;
+    render();
+  }
+
+  function stopRecord() {
+    if (!window.App || !window.App.stopRecord) return;
+    const name = window.App.stopRecord();
+    recState.recording = false;
+    recState.url = name && window.App.recordUrl ? window.App.recordUrl() : '';
+    render();
+    toast(recState.url ? '已保存，点回放听听' : '录音失败');
+  }
+
+  function playRecord() {
+    if (!recState.url) { toast('还没有录音'); return; }
+    try {
+      const a = new Audio(recState.url);
+      a.play();
+    } catch (e) {
+      toast('回放失败');
+    }
+  }
   let speakState = { ends: 0, label: '' };
 
   function cueScreen() {
@@ -1416,6 +1445,13 @@
       <div class="speak-timer" id="speakTimer">--:--</div>
       <button class="btn primary" data-act="cue-prep:${i}">1 分钟准备</button>
       <button class="btn ghost" data-act="cue-talk:${i}">2 分钟作答</button>
+      <div class="row2">
+        ${recState.recording
+          ? '<button class="btn danger sm" data-act="rec-stop">■ 停止录音</button>'
+          : '<button class="btn ghost sm" data-act="rec-start">● 录下来</button>'}
+        <button class="btn ghost sm" data-act="rec-play" ${recState.url ? '' : 'disabled'}>▶ 回放</button>
+      </div>
+      ${recState.url ? '<p class="small muted center">录完自己听一遍：卡在哪、哪里开始念稿</p>' : ''}
       <button class="btn ghost" data-act="back">换一张卡</button>
       <p class="small muted center">说的时候尽量用上你学过的词，别背模板。</p>
     </div>`;
@@ -1497,6 +1533,169 @@
       <h1 class="dtitle small">${esc(t)}</h1>
       <textarea id="wdraft" class="draft" placeholder="在这里写提纲或全文，只存在本机…">${esc(d)}</textarea>
       <p class="small muted center"><span id="wcount">${d.length}</span> 字符 · 目标 250 词以上</p>
+      <button class="btn primary" data-act="wcheck">检查一下</button>
+      ${reportHTML()}
+      <button class="btn ghost" data-act="back">返回</button>
+    </div>`;
+  }
+
+  /* ---------- 写作自查 ---------- */
+
+  const LINKWORDS = ['however', 'moreover', 'furthermore', 'in addition', 'therefore', 'consequently',
+    'nevertheless', 'although', 'whereas', 'on the other hand', 'in conclusion', 'for instance',
+    'for example', 'as a result', 'firstly', 'secondly', 'finally', 'in contrast', 'despite', 'while'];
+
+  let essayReport = null;
+
+  function checkEssay(text) {
+    const t = String(text || '').trim();
+    const words = t.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+    const wc = words.length;
+    const sents = t.split(/[.!?]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x.split(/\s+/).length > 2; });
+    const avg = sents.length ? Math.round(wc / sents.length) : 0;
+    const paras = t.split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 20; }).length;
+    const lower = t.toLowerCase();
+    const used = LINKWORDS.filter(function (l) { return lower.indexOf(l) >= 0; });
+    const freq = {};
+    words.forEach(function (w) {
+      const k = w.toLowerCase();
+      if (k.length > 3) freq[k] = (freq[k] || 0) + 1;
+    });
+    const rep = Object.keys(freq).filter(function (k) { return freq[k] >= 5 && LINKWORDS.indexOf(k) < 0; })
+      .sort(function (a, b) { return freq[b] - freq[a]; }).slice(0, 3);
+    const contr = t.match(/\b(don't|can't|won't|isn't|aren't|it's|didn't|doesn't|I'm|they're)\b/gi) || [];
+    const stance = t.match(/\b(I think|I believe|in my opinion)\b/gi) || [];
+
+    const out = [];
+    out.push({ lv: wc >= 250 ? 'pass' : wc >= 180 ? 'warn' : 'bad', t: '词数 ' + wc,
+      d: wc >= 250 ? '达到 250 词要求' : 'Task 2 要求至少 250 词，还差 ' + (250 - wc) + ' 词' });
+    out.push({ lv: paras >= 4 && paras <= 6 ? 'pass' : 'warn', t: '段落 ' + (paras || 1),
+      d: paras >= 4 && paras <= 6 ? '结构完整' : '建议 4–5 段：引言 1 段、两个主体段、结论 1 段' });
+    out.push({ lv: used.length >= 5 ? 'pass' : used.length >= 3 ? 'warn' : 'bad', t: '连接词 ' + used.length + ' 种',
+      d: used.length ? '用了：' + used.slice(0, 6).join('、') : '几乎没有连接词，段落之间会显得松散' });
+    out.push({ lv: avg >= 12 && avg <= 22 ? 'pass' : 'warn', t: '平均句长 ' + avg + ' 词',
+      d: avg === 0 ? '还没写完' : avg > 22 ? '句子偏长，容易失控，试着拆成两句' : avg < 12 ? '句子偏短，读起来碎，试着用从句合并' : '长短适中' });
+    if (rep.length) {
+      out.push({ lv: 'warn', t: '重复用词：' + rep.join('、'), d: '同一个词出现 5 次以上，换同义替换能提 Lexical Resource' });
+    }
+    if (contr.length) {
+      out.push({ lv: 'warn', t: '缩写 ' + contr.length + ' 处', d: '学术写作不要用 don\'t / can\'t，写成 do not / cannot' });
+    }
+    if (stance.length > 2) {
+      out.push({ lv: 'warn', t: '立场词 ' + stance.length + ' 次', d: 'I think 出现太多次，换成 It is arguable that / This essay argues that' });
+    }
+    return out;
+  }
+
+  function reportHTML() {
+    if (!essayReport) return '';
+    const icon = { pass: '✓', warn: '!', bad: '×' };
+    return `<section class="card report">
+      <div class="card-head"><span>自查结果</span><span>启发式检查，不是人工批改</span></div>
+      ${essayReport.map(function (r) {
+        return `<div class="rep-row ${r.lv}"><span class="rep-ico">${icon[r.lv]}</span><div><b>${esc(r.t)}</b><span>${esc(r.d)}</span></div></div>`;
+      }).join('')}
+    </section>`;
+  }
+
+  /* ---------- 阅读模拟题 ---------- */
+
+  const PASSAGES = [
+    {
+      title: 'The Return of the City Farm',
+      text: `City farms are not a new idea. In the late nineteenth century, several British towns set aside plots of land for factory workers to grow vegetables, partly to supplement low wages and partly to improve public health in overcrowded districts. Those allotments faded as cheap imported food became available, and by the 1970s urban agriculture in Europe was largely a hobby.
+
+The past fifteen years have brought it back, for different reasons. Rooftop gardens, converted car parks and unused railway land now host commercial operations in cities from Tokyo to Toronto. Their produce is usually sold within a few kilometres, which cuts transport emissions and gives restaurants access to fresher ingredients. Investors have noticed: venture funding for vertical farming — growing crops in stacked layers under artificial light — exceeded two billion dollars in 2021 alone.
+
+Yet the numbers remain modest. A widely cited survey of New York's urban farms found that they supplied less than one per cent of the city's vegetable consumption. Vertical farms also consume large amounts of electricity; lighting and climate control can account for most of their running costs, and several high-profile companies have collapsed after failing to bring energy use down. Critics argue that the money would be better spent improving conventional agriculture, which is more efficient per unit of energy.
+
+Supporters counter that the benefits are not only about volume. Urban farms reduce the distance food travels, create jobs in areas with high unemployment, and give city children direct experience of how food is grown. Some schemes also absorb rainwater that would otherwise overload drainage systems, and green roofs insulate buildings, lowering cooling costs in summer.
+
+Whether these advantages justify the investment is a political question as much as an economic one. What is clear is that city farming has moved from the margins of planning policy to the centre of debates about how cities should feed themselves.`,
+      qs: [
+        { type: 'tfng', q: 'British towns in the nineteenth century gave workers land to grow food.', a: 'TRUE', why: 'In the late nineteenth century, several British towns set aside plots of land for factory workers to grow vegetables.' },
+        { type: 'tfng', q: 'Urban farms in New York supply most of the city\'s vegetables.', a: 'FALSE', why: 'The passage says they supplied less than one per cent — the opposite of "most".' },
+        { type: 'tfng', q: 'Electricity is the main running cost of vertical farms.', a: 'TRUE', why: 'Lighting and climate control can account for most of their running costs.' },
+        { type: 'tfng', q: 'The author believes urban farming should replace conventional agriculture.', a: 'NOT GIVEN', why: 'The author never takes that position — they call it "a political question". Critics say the money should go elsewhere, but that is not the author\'s view.' },
+        { type: 'tfng', q: 'Some urban farms help reduce the risk of flooding.', a: 'TRUE', why: 'Some schemes also absorb rainwater that would otherwise overload drainage systems.' },
+        { type: 'mcq', q: 'Which benefit is NOT mentioned in the passage?', o: ['cutting transport emissions', 'creating jobs', 'lowering food prices'], a: 2, why: 'Transport emissions, jobs and drainage are all mentioned; food prices are never mentioned.' },
+        { type: 'mcq', q: 'What does the passage say about vertical farming companies?', o: ['most of them are profitable', 'several have failed because of energy costs', 'they receive no investment at all'], a: 1, why: 'Several high-profile companies have collapsed after failing to bring energy use down.' },
+      ],
+    },
+    {
+      title: 'Sleep, Memory and the Student',
+      text: `For years, the standard advice was that sleep rests the body. Research over the past two decades suggests its more important function may be the brain's filing system. During deep sleep, the brain replays patterns of activity recorded during the day, and the hippocampus — a structure central to forming new memories — transfers them to the cortex for long-term storage.
+
+The evidence comes from both directions. Volunteers who are prevented from sleeping after learning a list of words remember substantially fewer of them two days later than those who sleep normally. Conversely, people who sleep well before learning something new perform better, suggesting that rest prepares the brain to absorb information rather than merely preserving it afterwards.
+
+Not all sleep is equal. Deep slow-wave sleep, which dominates the first half of the night, appears to matter most for factual learning; rapid eye movement sleep, concentrated in the early hours of the morning, has been linked to creative problem solving and emotional processing. Cutting a night short therefore does more than reduce total sleep: it selectively removes the stage responsible for consolidating whatever was studied the previous evening.
+
+The practical implications are awkward for students. Revising late at night is widely regarded as virtuous, yet the evidence suggests it is self-defeating unless it is followed by adequate sleep. A number of schools in the United States have pushed start times later in response, and initial results show improved attendance and grades.
+
+Some caution is warranted. Much of the research uses small samples, and effects vary considerably between individuals. Sleep is also easy to disturb in university dormitories and shared flats, so the advice to prioritise it is not always within a student's control. But the direction of the evidence is consistent, and it points to a conclusion that exam candidates rarely hear: the hours before a test may matter less than the hours of sleep before it.`,
+      qs: [
+        { type: 'tfng', q: 'Deep sleep helps move memories into long-term storage.', a: 'TRUE', why: 'The hippocampus transfers them to the cortex for long-term storage during deep sleep.' },
+        { type: 'tfng', q: 'REM sleep is the most important stage for memorising facts.', a: 'FALSE', why: 'Deep slow-wave sleep matters most for factual learning; REM is linked to creative problem solving.' },
+        { type: 'tfng', q: 'Cutting a night short only reduces the total amount of sleep.', a: 'FALSE', why: 'It also selectively removes the stage responsible for consolidating what was studied.' },
+        { type: 'tfng', q: 'Most of the research is based on very large samples.', a: 'FALSE', why: 'Much of the research uses small samples.' },
+        { type: 'tfng', q: 'All students are able to act on the advice about sleep.', a: 'FALSE', why: 'It is "not always within a student\'s control" — dormitories and shared flats disturb sleep.' },
+        { type: 'mcq', q: 'What does the passage suggest about late-night revision?', o: ['it is the most effective method', 'it is self-defeating without enough sleep afterwards', 'it should be banned in schools'], a: 1, why: 'The evidence suggests it is self-defeating unless it is followed by adequate sleep.' },
+        { type: 'mcq', q: 'What is the author\'s main conclusion?', o: ['sleep quality matters more than revision time before a test', 'schools should start much later', 'students should avoid all-night study'], a: 0, why: 'The hours before a test may matter less than the hours of sleep before it.' },
+      ],
+    },
+  ];
+
+  const TFNG = ['TRUE', 'FALSE', 'NOT GIVEN'];
+  let readPick = {};
+
+  function readingScreen() {
+    return `<div class="screen">
+      <h1>阅读练习</h1>
+      <p class="small muted">两篇原创雅思风格文章，题目按真题题型出（T/F/NG + 单选），做完给答案和解析。这些不是剑桥真题——真题有版权，只能自己写。</p>
+      ${PASSAGES.map(function (p, i) {
+        const n = (p.text.match(/[A-Za-z']+/g) || []).length;
+        return `<button class="cue" data-act="read:${i}">
+          <b>${esc(p.title)}</b>
+          <span>${n} 词 · ${p.qs.length} 题</span>
+        </button>`;
+      }).join('')}
+      <h3>题型技巧</h3>
+      ${RTIPS.map(function (t) {
+        return `<section class="card tip">
+          <div class="tip-title">${esc(t[0])}</div>
+          <div class="tip-body">${esc(t[1])}</div>
+        </section>`;
+      }).join('')}
+    </div>`;
+  }
+
+  function passageScreen(i) {
+    const p = PASSAGES[i];
+    if (!p) return readingScreen();
+    return `<div class="screen">
+      <span class="ncat">PASSAGE ${i + 1}</span>
+      <h1 class="dtitle small">${esc(p.title)}</h1>
+      <article class="passage">${p.text.split(/\n\s*\n/).map(function (par) { return '<p>' + esc(par) + '</p>'; }).join('')}</article>
+      ${p.qs.map(function (q, qi) {
+        const key = i + ':' + qi;
+        const picked = readPick[key];
+        const opts = q.type === 'tfng' ? TFNG : q.o;
+        const done = picked !== undefined;
+        return `<section class="card q">
+          <div class="q-no">${qi + 1}</div>
+          <div class="q-text">${esc(q.q)}</div>
+          <div class="q-opts">
+            ${opts.map(function (o, oi) {
+              const val = q.type === 'tfng' ? o : oi;
+              const isAns = q.type === 'tfng' ? o === q.a : oi === q.a;
+              const cls = done ? (isAns ? 'ok' : (picked === val ? 'bad' : 'dim')) : '';
+              return `<button class="q-opt ${cls}" data-act="read-ans:${i}:${qi}:${typeof val === 'string' ? val : val}" ${done ? 'disabled' : ''}>${esc(String(o))}</button>`;
+            }).join('')}
+          </div>
+          ${done ? `<div class="q-why ${(q.type === 'tfng' ? picked === q.a : picked === q.a) ? 'good' : 'bad'}">
+            正确答案：${esc(q.type === 'tfng' ? q.a : q.o[q.a])}<br>${esc(q.why)}</div>` : ''}
+        </section>`;
+      }).join('')}
       <button class="btn ghost" data-act="back">返回</button>
     </div>`;
   }
@@ -1512,26 +1711,11 @@
     ['时间分配', '学术类阅读 60 分钟 3 篇 40 题。建议 17 / 20 / 20 分钟，最后一篇留 3 分钟填卡，别在某一道题上超过 2 分钟。'],
   ];
 
-  function readingScreen() {
-    return `<div class="screen">
-      <h1>阅读技巧</h1>
-      <p class="small muted">阅读不是读得越多越快，是知道题目在考什么。这六条是最常被忽略的。</p>
-      ${RTIPS.map(function (t) {
-        return `<section class="card tip">
-          <div class="tip-title">${esc(t[0])}</div>
-          <div class="tip-body">${esc(t[1])}</div>
-        </section>`;
-      }).join('')}
-    </div>`;
-  }
-
-  /* ---------- 训练入口 ---------- */
-
   function trainGrid() {
     const items = [
       ['speaking', '口语 Part 2', CUE.length + ' 张话题卡', 'spark'],
       ['writing', '写作 Task 2', WTOPIC.length + ' 个话题', 'study'],
-      ['reading', '阅读技巧', RTIPS.length + ' 条', 'library'],
+      ['reading', '阅读练习', PASSAGES.length + ' 篇 + 技巧', 'library'],
       ['syn', '同义替换', SYN.length + ' 组', 'quiz'],
     ];
     return `<div class="train-grid">
@@ -1639,6 +1823,7 @@
     if (typeof screen !== 'string') return null;
     if (screen.indexOf('cue:') === 0) return 'speaking';
     if (screen.indexOf('wtop:') === 0) return 'writing';
+    if (screen.indexOf('read:') === 0) return 'reading';
     if (screen.indexOf('words:') === 0) return null;
     return null;
   }
@@ -1650,6 +1835,7 @@
     if (S.ui.screen === 'syn') return synIntro();
     if (S.ui.screen === 'writing') return writingScreen();
     if (S.ui.screen === 'reading') return readingScreen();
+    if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('read:') === 0) return passageScreen(Number(S.ui.screen.slice(5)));
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('cue:') === 0) return cueDetail(Number(S.ui.screen.slice(4)));
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('wtop:') === 0) return wtopicScreen(Number(S.ui.screen.slice(5)));
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) return wordsScreen(S.ui.screen.slice(6));
@@ -1816,13 +2002,47 @@
       case 'cue-talk':
         runSpeakTimer(act === 'cue-prep' ? 60 : 120, act === 'cue-prep' ? '准备' : '作答');
         break;
+      case 'read': {
+        readPick = {};
+        S.ui.screen = 'read:' + arg;
+        save();
+        render();
+        window.scrollTo(0, 0);
+        break;
+      }
+      case 'read-ans': {
+        const pi = parts[1];
+        const qi = parts[2];
+        const val = parts.slice(3).join(':');
+        const q = PASSAGES[Number(pi)].qs[Number(qi)];
+        readPick[pi + ':' + qi] = q.type === 'tfng' ? String(val) : Number(val);
+        render();
+        break;
+      }
+      case 'wcheck': {
+        const idx = S.ui.screen.slice(5);
+        essayReport = checkEssay((S.writing || {})[idx] || '');
+        render();
+        window.scrollTo(0, document.body.scrollHeight);
+        break;
+      }
       case 'wtop': {
+        essayReport = null;
         S.ui.screen = 'wtop:' + arg;
         save();
         render();
         window.scrollTo(0, 0);
         break;
       }
+      case 'rec-start':
+        startRecord();
+        break;
+      case 'rec-stop':
+        stopRecord();
+        break;
+      case 'rec-play':
+        playRecord();
+        break;
       case 'say':
         speak(parts.slice(1).join(':'));
         break;

@@ -22,9 +22,14 @@ fi
 rm -rf "$OUT"
 mkdir -p "$OUT/classes"
 
-"$JAVA_BIN/javac" -encoding UTF-8 -source 1.8 -target 1.8 \
+if ! "$JAVA_BIN/javac" -encoding UTF-8 -source 1.8 -target 1.8 \
   -bootclasspath "$SDK_JAR" -d "$OUT/classes" \
-  "$ROOT"/android/src/com/dsh/ielts/*.java 2>&1 | grep -v "bootstrap class path" || true
+  "$ROOT"/android/src/com/dsh/ielts/*.java > "$OUT/javac.log" 2>&1; then
+  echo "javac 编译失败：" >&2
+  grep -v "bootstrap class path" "$OUT/javac.log" >&2
+  exit 1
+fi
+grep -v "bootstrap class path" "$OUT/javac.log" >&2 || true
 
 /usr/lib/android-sdk/build-tools/debian/dx --dex --output="$OUT/classes.dex" "$OUT/classes"
 

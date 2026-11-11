@@ -351,3 +351,33 @@ h3{font-size:14px;margin:0;letter-spacing:.2px;font-weight:700}
 .tip{padding:13px 15px}
 .tip-title{font-size:12px;letter-spacing:.8px;font-weight:750;color:var(--accent);margin-bottom:6px}
 .tip-body{font-size:13.5px;line-height:1.75;color:var(--text)}
+
+/* 阅读模拟题 */
+.passage{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px 17px}
+.passage p{margin:0 0 12px;font-size:14.5px;line-height:1.85;color:var(--text)}
+.passage p:last-child{margin-bottom:0}
+.q{position:relative;padding:14px 15px}
+.q-no{position:absolute;left:13px;top:13px;width:22px;height:22px;border-radius:7px;background:rgba(45,212,191,.15);
+  color:var(--accent);font-size:11px;font-weight:750;display:grid;place-items:center}
+.q-text{font-size:14px;line-height:1.6;font-weight:600;margin:0 0 10px 32px}
+.q-opts{display:flex;flex-direction:column;gap:6px}
+.q-opt{text-align:left;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--bg2);
+  color:var(--text);font-family:inherit;font-size:13px;cursor:pointer}
+.q-opt.ok{border-color:rgba(52,211,153,.6);background:rgba(52,211,153,.12);color:var(--good)}
+.q-opt.bad{border-color:rgba(251,113,133,.6);background:rgba(251,113,133,.1);color:var(--bad)}
+.q-opt.dim{opacity:.45}
+.q-why{margin-top:10px;font-size:12.5px;line-height:1.65;padding:9px 11px;border-radius:11px;
+  background:var(--card2);border:1px solid var(--line);color:var(--muted)}
+.q-why.good{color:var(--good)}
+.q-why.bad{color:var(--warn)}
+
+/* 写作自查 */
+.report .rep-row{display:flex;gap:9px;padding:9px 0;border-bottom:1px solid var(--line)}
+.report .rep-row:last-child{border-bottom:none}
+.rep-ico{width:20px;height:20px;flex:none;border-radius:6px;display:grid;place-items:center;font-size:12px;font-weight:800}
+.rep-row.pass .rep-ico{background:rgba(52,211,153,.18);color:var(--good)}
+.rep-row.warn .rep-ico{background:rgba(251,191,36,.18);color:var(--warn)}
+.rep-row.bad .rep-ico{background:rgba(251,113,133,.18);color:var(--bad)}
+.rep-row div{display:flex;flex-direction:column;gap:2px;min-width:0}
+.rep-row b{font-size:13px;font-weight:650}
+.rep-row span{font-size:11.5px;color:var(--muted);line-height:1.5}

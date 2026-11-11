@@ -1,7 +1,10 @@
 package com.dsh.ielts;
 
 import android.app.Activity;
+import android.Manifest;
 import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.media.MediaRecorder;
 import android.content.pm.PackageManager;
 import android.content.res.Configuration;
 import android.graphics.Color;
@@ -28,6 +31,9 @@ public class MainActivity extends Activity {
 
     private WebView web;
     private boolean dark;
+    private MediaRecorder recorder;
+    private String recordName;
+    private static final int REQ_MIC = 1001;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -87,6 +93,28 @@ public class MainActivity extends Activity {
             return "android";
         }
 
+        @JavascriptInterface
+        public boolean startRecord() {
+            if (Build.VERSION.SDK_INT >= 23 && checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+                    != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO}, REQ_MIC);
+                return false;
+            }
+            return beginRecord();
+        }
+
+        @JavascriptInterface
+        public String stopRecord() {
+            return endRecord();
+        }
+
+        @JavascriptInterface
+        public String recordUrl() {
+            File f = new File(getCacheDir(), "rec.m4a");
+            if (!f.isFile()) return "";
+            return ApkProvider.uriFor(MainActivity.this, f).toString();
+        }
+
         /** 用系统浏览器打开外部链接（外刊原文）。 */
         @JavascriptInterface
         public void openUrl(final String url) {
@@ -104,6 +132,43 @@ public class MainActivity extends Activity {
                 }
             });
         }
+    }
+
+    private boolean beginRecord() {
+        endRecord();
+        try {
+            File out = new File(getCacheDir(), "rec.m4a");
+            if (out.exists()) out.delete();
+            recorder = new MediaRecorder();
+            recorder.setAudioSource(MediaRecorder.AudioSource.MIC);
+            recorder.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4);
+            recorder.setAudioEncoder(MediaRecorder.AudioEncoder.AAC);
+            recorder.setAudioEncodingBitRate(64000);
+            recorder.setAudioSamplingRate(44100);
+            recorder.setOutputFile(out.getAbsolutePath());
+            recorder.prepare();
+            recorder.start();
+            recordName = out.getName();
+            return true;
+        } catch (Exception e) {
+            recorder = null;
+            Toast.makeText(this, "无法开始录音：" + e.getClass().getSimpleName(), Toast.LENGTH_SHORT).show();
+            return false;
+        }
+    }
+
+    private String endRecord() {
+        if (recorder == null) return recordName == null ? "" : recordName;
+        try {
+            recorder.stop();
+        } catch (Exception ignored) {
+        }
+        try {
+            recorder.release();
+        } catch (Exception ignored) {
+        }
+        recorder = null;
+        return recordName == null ? "" : recordName;
     }
 
     private void download(String url) {
@@ -250,7 +315,14 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onPause() {
+        if (recorder != null) endRecord();
+        super.onPause();
+    }
+
+    @Override
     protected void onDestroy() {
+        if (recorder != null) endRecord();
         if (web != null) {
             web.destroy();
             web = null;
