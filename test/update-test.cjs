@@ -32,7 +32,6 @@ function boot({ version = '1.2.0', tag = 'v9.9.9', withBridge = true } = {}) {
       window.fetch = (url) => {
         const u = String(url);
         if (u.indexOf('version.json') >= 0) {
-          // 国内镜像的版本清单
           return Promise.resolve({
             ok: true,
             json: () => Promise.resolve({ version: tag.replace(/^v/, ''), urls: [ASSET], size: 745472 }),
@@ -79,7 +78,8 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 2) 一键更新调用原生
     click(t.window, '[data-act="update"]');
     assert(t.calls.length === 1, '点击一键更新调用原生接口');
-    assert(t.calls[0] === ASSET, '把镜像地址列表交给原生');
+    assert(t.calls[0].indexOf('ielts-vocab-9.9.9.apk') > 0, '按版本号拼出镜像地址：' + t.calls[0].split('\n')[0]);
+    assert(t.calls[0].split('\n').length >= 3, '交给原生的是多个镜像地址');
     assert(text(t.window).includes('下载中'), '进入下载态');
 
     // 3) 进度回传
@@ -125,10 +125,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 镜像全挂 → 回落 GitHub API
     const t4 = boot({ version: '1.0.0', tag: 'v9.9.9' });
+    let apiCalls = 0;
     t4.window.fetch = (url) => {
       const u = String(url);
       if (u.indexOf('version.json') >= 0) return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
       if (u.indexOf('api.github.com') >= 0) {
+        apiCalls += 1;
         return Promise.resolve({ ok: true, json: () => Promise.resolve({
           tag_name: 'v9.9.9',
           assets: [{ name: 'ielts-vocab.apk', size: 745472, browser_download_url: ASSET }],
@@ -140,8 +142,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     click(t4.window, '[data-act="open:settings"]');
     click(t4.window, '[data-act="check-update"]');
     await sleep(500);
+    assert(apiCalls >= 1, '版本号走 GitHub API');
     assert(t4.window.__ielts.state().update && t4.window.__ielts.state().update.version === '9.9.9',
-      '镜像失败时回落 GitHub API 仍能拿到版本');
+      'API 返回版本后正确解析');
     t4.window.close();
 
     console.log('\nUPDATE TEST PASS');

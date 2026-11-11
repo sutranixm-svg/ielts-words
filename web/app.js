@@ -18,12 +18,17 @@
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
   const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
   // 更新检查优先走国内可达的镜像，最后才回落到 GitHub API
-  // gh-proxy 会把 version.json 也缓存住，所以清单优先用会刷新的源
-  const VER_MIRRORS = [
-    'https://ghfast.top/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
-    'https://gcore.jsdelivr.net/gh/' + REPO + '@dist/version.json',
-    'https://gh-proxy.com/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
-  ];
+  /** 按版本号拼出各镜像上的安装包地址。 */
+  function mirrorUrls(ver) {
+    if (!ver) return [];
+    const f = 'ielts-vocab-' + ver + '.apk';
+    const gh = 'https://github.com/sutranixm-svg/ielts-words/raw/dist/' + f;
+    return [
+      'https://ghfast.top/' + gh,
+      'https://gh-proxy.com/' + gh,
+      'https://gcore.jsdelivr.net/gh/sutranixm-svg/ielts-words@dist/' + f,
+    ];
+  }
   const NEWS_TTL = 6 * 3600 * 1000;
   const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
 
@@ -665,30 +670,28 @@
     return 0;
   }
 
+  /** 版本号只信 GitHub API（它不缓存），下载地址按版本号拼到镜像上。 */
   function fetchVersion() {
-    let i = 0;
-    function next() {
-      if (i >= VER_MIRRORS.length) {
-        // 镜像全挂就退回 GitHub API
-        return fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+    return fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => {
+        const tag = j && j.tag_name ? j.tag_name : '';
+        const ver = String(tag).replace(/^v/i, '');
+        const urls = mirrorUrls(ver);
+        if (j && j.assets && j.assets.length) urls.push(j.assets[0].browser_download_url);
+        return { tag, size: ((j && j.assets) || [{}])[0].size || 0, urls };
+      })
+      .catch(function () {
+        // API 不通时退回可变清单（可能滞后，只作兜底）
+        return fetch('https://ghfast.top/https://raw.githubusercontent.com/' + REPO
+          + '/dist/version.json?t=' + Date.now(), { cache: 'no-store' })
           .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
           .then((j) => ({
-            tag: j && j.tag_name ? j.tag_name : '',
-            urls: ((j && j.assets) || []).map((a) => a.browser_download_url),
-            size: ((j && j.assets) || [])[0] ? ((j.assets || [])[0].size || 0) : 0,
+            tag: 'v' + String(j.version || ''),
+            size: j.size || 0,
+            urls: (j.urls || []).slice(),
           }));
-      }
-      const u = VER_MIRRORS[i++];
-      return fetch(u + '?t=' + Date.now(), { cache: 'no-store' })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-        .then((j) => ({
-          tag: 'v' + String(j.version || ''),
-          urls: (j.urls && j.urls.length ? j.urls : (j.apk ? [j.apk] : [])),
-          size: j.size || 0,
-        }))
-        .catch(next);
-    }
-    return next();
+      });
   }
 
   function checkUpdate(manual) {
