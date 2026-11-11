@@ -280,3 +280,74 @@ h3{font-size:14px;margin:0;letter-spacing:.2px;font-weight:700}
 .step-val{display:flex;align-items:baseline;gap:5px}
 .step-val b{font-size:24px;font-weight:750;letter-spacing:.3px}
 .step-val span{font-size:11px;color:var(--muted)}
+
+/* 发音按钮 */
+.say{border:none;background:rgba(45,212,191,.14);color:var(--accent);border-radius:999px;
+  width:34px;height:34px;margin-left:9px;font-size:15px;line-height:1;display:inline-grid;place-items:center;
+  vertical-align:middle;font-family:inherit;cursor:pointer;flex:none}
+.say:active{transform:scale(.92)}
+.say.sm{width:26px;height:26px;font-size:12px;margin-left:6px}
+.say.big{width:96px;height:96px;font-size:40px;margin:0;border-radius:28px;background:linear-gradient(135deg,rgba(45,212,191,.18),rgba(56,189,248,.14))}
+.q-prompt.listen{display:flex;justify-content:center;padding:10px 0 4px}
+
+/* 考试倒计时条 */
+.exam-bar{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid var(--line);
+  border-radius:18px;padding:12px 14px}
+.eb-main{flex:1;min-width:0;display:flex;flex-direction:column;gap:2px}
+.eb-main b{font-size:20px;font-weight:750;letter-spacing:.3px}
+.eb-main span{font-size:11px;color:var(--muted)}
+.exam-empty{width:100%;text-align:left;background:var(--card2);border:1px dashed var(--line);border-radius:16px;
+  padding:13px 14px;color:var(--muted);font-size:12.5px;font-family:inherit;cursor:pointer}
+.date-row{display:flex;align-items:center;gap:8px}
+.date-row input{flex:1;height:48px;border-radius:14px;border:1px solid var(--line);background:var(--card);
+  color:var(--text);font-family:inherit;font-size:15px;padding:0 12px;outline:none}
+
+/* 模考 */
+.mock-timer{font-variant-numeric:tabular-nums;font-size:13px;font-weight:700;color:var(--warn);
+  letter-spacing:1px;margin:2px 0 4px}
+.band{display:flex;flex-direction:column;align-items:center;gap:2px;margin-top:8px}
+.band b{font-size:30px;font-weight:800;color:var(--accent)}
+.band span{font-size:11px;color:var(--muted)}
+.en-def{font-size:13px;color:var(--muted);font-style:italic;line-height:1.55}
+.icon-btn.sm{width:34px;height:34px;border-radius:11px;font-size:15px}
+
+/* 四项训练 */
+.train-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.train{display:flex;flex-direction:column;gap:4px;text-align:left;background:var(--card);border:1px solid var(--line);
+  border-radius:16px;padding:13px 14px;font-family:inherit;color:var(--text);cursor:pointer}
+.train .ico{color:var(--accent);display:flex;margin-bottom:2px}
+.train .ico svg{width:20px;height:20px;stroke:currentColor;fill:none;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.train b{font-size:14px;font-weight:700}
+.train span{font-size:11px;color:var(--muted)}
+
+/* 口语话题卡 */
+.cues{display:flex;flex-direction:column;gap:8px}
+.cue{display:flex;flex-direction:column;gap:3px;text-align:left;background:var(--card);border:1px solid var(--line);
+  border-radius:15px;padding:12px 14px;font-family:inherit;color:var(--text);cursor:pointer}
+.cue b{font-size:13.5px;font-weight:650;line-height:1.45}
+.cue span{font-size:11px;color:var(--dim)}
+.cue-points{margin:0;padding-left:18px;font-size:14px;line-height:1.85;color:var(--text)}
+.speak-timer{font-size:48px;font-weight:800;font-variant-numeric:tabular-nums;text-align:center;
+  padding:10px 0;color:var(--accent);letter-spacing:2px}
+.speak-timer.done{color:var(--bad)}
+
+/* 写作 */
+.dtitle.small{font-size:16px;line-height:1.5}
+.draft{width:100%;min-height:220px;border-radius:16px;border:1px solid var(--line);background:var(--card);
+  color:var(--text);font-family:inherit;font-size:14px;line-height:1.7;padding:13px 14px;outline:none;resize:vertical}
+.phr{display:flex;flex-direction:column;gap:3px;padding:9px 0;border-bottom:1px solid var(--line);font-size:13px}
+.phr:last-child{border-bottom:none}
+.phr b{font-weight:650}
+.phr span{font-size:11.5px;color:var(--muted)}
+
+/* 同义替换 */
+.syn-list{display:flex;flex-direction:column;gap:2px}
+.syn-row{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line);font-size:14px}
+.syn-row:last-child{border-bottom:none}
+.syn-row span{color:var(--dim);font-size:12px}
+.syn-row b{font-weight:650}
+
+/* 阅读技巧 */
+.tip{padding:13px 15px}
+.tip-title{font-size:12px;letter-spacing:.8px;font-weight:750;color:var(--accent);margin-bottom:6px}
+.tip-body{font-size:13.5px;line-height:1.75;color:var(--text)}

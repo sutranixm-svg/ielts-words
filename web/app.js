@@ -9,7 +9,7 @@
   const INTERVALS = [1, 2, 4, 8, 16, 32];
   const MASTER_BOX = 4;
   const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  const KINDS = ['zh', 'en', 'spell'];
+  const KINDS = ['zh', 'en', 'spell', 'listen'];
   // 艾宾浩斯复习间隔（天）：错词按这个节奏往后推
   const EBB = [1, 2, 4, 7, 15, 30, 60];
   const WRONG_BATCH = 20;
@@ -70,13 +70,14 @@
       v: 1,
       words: {},
       days: {},
-      settings: { dailyNew: 15, dailyGoal: 20, decks: TOPICS.map((t) => t.id) },
+      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', decks: TOPICS.map((t) => t.id) },
       session: null,
       quiz: null,
       lastSession: null,
       update: null,
       seenUpdate: '',
       news: { fetched: '', items: [] },
+      writing: {},
       ui: { tab: 'today', screen: null, confirm: null },
     };
   }
@@ -415,6 +416,11 @@
       const opts = shuffle([word.zh, ...others.map((w) => w.zh)]);
       return { w: word.w, kind, prompt: word.w, hint: '', options: opts, answer: opts.indexOf(word.zh), chosen: null, correct: null };
     }
+    if (kind === 'listen') {
+      const others = sample(safePool.filter((w) => w.w !== word.w && Math.abs(w.w.length - word.w.length) <= 3), 3);
+      const opts = shuffle([word.w, ...others.map((w) => w.w)]);
+      return { w: word.w, kind, prompt: '', hint: '听发音，选出正确的拼写', options: opts, answer: opts.indexOf(word.w), chosen: null, correct: null };
+    }
     if (kind === 'en') {
       const others = sample(safePool.filter((w) => w.w !== word.w), 3);
       const opts = shuffle([word.w, ...others.map((w) => w.w)]);
@@ -504,6 +510,11 @@
     q.answered = true;
     if (item.correct) q.score += 1;
     const rec = S.words[item.w];
+    if (q.kind === 'syn') {
+      save();
+      render();
+      return;
+    }
     if (rec && rec.seen) {
       if (q.kind === 'wrong' || q.kind === 'wrong-all') {
         const day = today();
@@ -577,6 +588,15 @@
   function topbarHTML() {
     if (S.ui.screen === 'settings') {
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">设置</div><div class="top-sub">学习节奏与数据</div></div></div>`;
+    }
+    const TRAIN_TITLE = { speaking: ['口语 Part 2', '1 分钟准备 · 2 分钟作答'], writing: ['写作 Task 2', '40 分钟 · 250 词'], reading: ['阅读技巧', '题型与时间分配'], syn: ['同义替换', 'paraphrase 训练'] };
+    if (TRAIN_TITLE[S.ui.screen]) {
+      const tt = TRAIN_TITLE[S.ui.screen];
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${tt[0]}</div><div class="top-sub">${tt[1]}</div></div></div>`;
+    }
+    if (typeof S.ui.screen === 'string' && (S.ui.screen.indexOf('cue:') === 0 || S.ui.screen.indexOf('wtop:') === 0)) {
+      const isCue = S.ui.screen.indexOf('cue:') === 0;
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${isCue ? '口语 Part 2' : '写作 Task 2'}</div><div class="top-sub">${isCue ? '计时练习' : '草稿只存本机'}</div></div></div>`;
     }
     if (S.ui.screen === 'decks') {
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">学习范围</div><div class="top-sub">${activeDecks().length} / ${TOPICS.length} 个词库</div></div></div>`;
@@ -692,6 +712,94 @@
     render();
   };
 
+  /* ---------- 语音朗读 ---------- */
+
+  let ttsReady = false;
+
+  function speak(text, rate) {
+    try {
+      if (!window.speechSynthesis) return;
+      speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(String(text || ''));
+      u.lang = 'en-US';
+      u.rate = rate || 0.92;
+      const vs = (speechSynthesis.getVoices && speechSynthesis.getVoices()) || [];
+      const v = vs.find((x) => /^en[-_]US/i.test(x.lang)) || vs.find((x) => /^en/i.test(x.lang));
+      if (v) u.voice = v;
+      speechSynthesis.speak(u);
+      ttsReady = true;
+    } catch (e) {
+      /* 没有语音引擎就静默失败，不影响其他功能 */
+    }
+  }
+
+  if (window.speechSynthesis && speechSynthesis.addEventListener) {
+    speechSynthesis.addEventListener('voiceschanged', function () { ttsReady = true; });
+  }
+
+  /* ---------- 备考计划 ---------- */
+
+  function daysToExam() {
+    const d = S.settings.examDate;
+    if (!d) return null;
+    const ms = parseDay(d) - parseDay(today());
+    return Math.ceil(ms / 86400000);
+  }
+
+  function planInfo() {
+    const days = daysToExam();
+    if (days === null) return null;
+    const pool = deckWords();
+    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen).length;
+    const raw = days > 0 ? Math.ceil(unseen / days) : unseen;
+    const perDay = Math.max(5, Math.min(60, raw));
+    return { days, unseen, perDay, raw, feasible: raw <= 60, exam: S.settings.examDate };
+  }
+
+  /* ---------- 模考 ---------- */
+
+  function bandOf(pct) {
+    if (pct >= 93) return '8.0';
+    if (pct >= 87) return '7.5';
+    if (pct >= 80) return '7.0';
+    if (pct >= 72) return '6.5';
+    if (pct >= 63) return '6.0';
+    if (pct >= 55) return '5.5';
+    if (pct >= 47) return '5.0';
+    if (pct >= 38) return '4.5';
+    if (pct >= 30) return '4.0';
+    return '3.5 或以下';
+  }
+
+  function startMock() {
+    const all = deckWords();
+    const seen = all.filter((w) => S.words[w.w] && S.words[w.w].seen);
+    const pool = seen.length >= 20 ? seen : all;
+    const picked = sample(pool, 20);
+    if (picked.length < 20) {
+      toast('词库太小，至少需要 20 个词');
+      return;
+    }
+    const items = picked.map((w, i) => {
+      const k = i % 3 === 2 ? 'listen' : (i % 2 === 0 ? 'zh' : 'en');
+      return makeItem(w, k, pool);
+    });
+    S.quiz = {
+      kind: 'mock',
+      items,
+      pos: 0,
+      answered: false,
+      score: 0,
+      done: false,
+      mock: true,
+      ends: Date.now() + 15 * 60 * 1000,
+    };
+    S.ui.tab = 'quiz';
+    S.ui.screen = null;
+    save();
+    render();
+  }
+
   function todayScreen() {
     const st = stats();
     const done = st.today.total;
@@ -721,8 +829,19 @@
           : st.newLeft > 0
             ? `今天还有 ${st.newLeft} 个新词，来一组？`
             : '今天的词学完了，做组测验？';
+    const plan = planInfo();
+    const planBar = plan
+      ? `<section class="exam-bar">
+          <div class="eb-main">
+            <b>${plan.days > 0 ? plan.days + ' 天' : '已到考试日'}</b>
+            <span>${plan.days > 0 ? '距离考试' : ''} · 还剩 ${plan.unseen} 个词${plan.feasible ? '' : ' · 按 60/天 背不完，建议先只学雅思词表'}</span>
+          </div>
+          <button class="btn primary xs" data-act="apply-plan">每天 ${plan.perDay} 个</button>
+        </section>`
+      : `<button class="exam-empty" data-act="open:settings">设置考试日期，自动算每天该背多少 ›</button>`;
     return `<div class="screen">
       ${updateBanner()}
+      ${planBar}
       <section class="coach">
         <img class="coach-ava" src="avatar.png" alt="鲸娘">
         <div class="coach-body">
@@ -779,7 +898,7 @@
     const body = revealed
       ? `<div class="divider"></div>
          <div class="meaning">${esc(w.pos)} ${esc(w.zh)}</div>
-         ${w.ex ? `<div class="example">${esc(w.ex)}</div>` : ''}`
+         ${w.ex ? `<div class="example">${esc(w.ex)}</div>` : w.def ? `<div class="example en-def">${esc(w.def)}</div>` : ''}`
       : `<div class="hint">先回忆一下，再点开对照</div>`;
     return `<div class="screen">
       <div class="study-head">
@@ -790,7 +909,7 @@
 
       <section class="flash ${revealed ? '' : 'tappable'}" ${revealed ? '' : 'data-act="reveal"'}>
         <span class="badge ${isNew ? 'new' : 'rev'}">${isNew ? '新词' : '复习'}${topic ? ' · ' + esc(topic.zh) : ''}</span>
-        <div class="word">${esc(w.w)}</div>
+        <div class="word">${esc(w.w)}<button class="say" data-act="say:${esc(w.w)}" aria-label="朗读">🔊</button></div>
         ${w.ipa ? `<div class="ipa">${esc(w.ipa)}</div>` : ''}
         ${body}
       </section>
@@ -821,6 +940,8 @@
       <button class="btn primary" data-act="start">开始今日学习</button>
       ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.due} 个</button>` : ''}
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
+      <h3>四项训练</h3>
+      ${trainGrid()}
       <p class="small muted center">记录保存在本机，不会上传。</p>
     </div>`;
   }
@@ -860,9 +981,10 @@
     if (!q) return quizSetup();
     if (q.done) return quizResult();
     const item = q.items[q.pos];
-    const w = WORD_MAP.get(item.w);
+    const w = WORD_MAP.get(item.w) || { w: item.w, pos: '', zh: '', ex: '' };
     const last = q.pos + 1 >= q.items.length;
-    const kindLabel = item.kind === 'zh' ? '英译中' : item.kind === 'en' ? '中译英' : '拼写';
+    const kindLabel = item.kind === 'zh' ? '英译中' : item.kind === 'en' ? '中译英'
+      : item.kind === 'listen' ? '听音选词' : '拼写';
     const opts = item.options
       .map((label, i) => {
         let cls = 'opt';
@@ -879,8 +1001,8 @@
     const feedback = q.answered
       ? `<div class="feedback ${item.correct ? 'good' : 'bad'}">
            <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc(item.options[item.answer])}</div>
-           <div class="small muted">${esc(w.pos)} ${esc(w.zh)}</div>
-           ${w.ex ? `<div class="small muted">${esc(w.ex)}</div>` : ''}
+           <div class="small muted">${esc(w.pos)} ${esc(w.zh)}<button class="say sm" data-act="say:${esc(w.w)}" aria-label="朗读">🔊</button></div>
+           ${w.ex ? `<div class="small muted">${esc(w.ex)}</div>` : w.def ? `<div class="small muted">${esc(w.def)}</div>` : ''}
          </div>
          <button class="btn primary" data-act="quiz:next">${last ? '看结果' : '下一题'}</button>`
       : '';
@@ -890,7 +1012,10 @@
         <div class="bar-track"><i style="width:${Math.round((q.pos / q.items.length) * 100)}%"></i></div>
         <div class="count">${q.pos + 1}/${q.items.length}</div>
       </div>
-      <div class="q-prompt ${item.kind === 'zh' ? '' : 'zh'}">${esc(item.prompt)}</div>
+      ${q.mock ? '<div class="mock-timer" id="mockTimer">15:00</div>' : ''}
+      ${item.kind === 'listen'
+        ? `<div class="q-prompt listen"><button class="say big" data-act="say:${esc(item.w)}" aria-label="播放">🔊</button></div>`
+        : `<div class="q-prompt ${item.kind === 'zh' ? '' : 'zh'}">${esc(item.prompt)}</div>`}
       <div class="q-hint">${esc(item.hint || kindLabel)}</div>
       <div class="opts">${opts}</div>
       ${feedback}
@@ -903,7 +1028,8 @@
       ['zh', '英译中', '看英文选中文释义'],
       ['en', '中译英', '看中文选英文单词'],
       ['spell', '拼写', '看释义选正确拼法'],
-      ['mix', '混合模式', '三种题型随机出现'],
+      ['listen', '听音选词', '听发音选拼写'],
+      ['mix', '混合模式', '五种题型随机出现'],
     ];
     if (st.wrong.length >= 4) modes.push(['wrong', '错词专项', `专练 ${st.wrong.length} 个错词`]);
     return `<div class="screen">
@@ -920,7 +1046,8 @@
           )
           .join('')}
       </div>
-      <p class="small muted center">不会的题会重复出现，直到你记住为止。</p>
+      <button class="btn primary" data-act="mock-start">模拟考 · 20 题 / 15 分钟</button>
+      <p class="small muted center">模拟考按题型混合出题，交卷后给词汇正确率和 Band 粗估。</p>
     </div>`;
   }
 
@@ -932,7 +1059,7 @@
       ? `<section class="card"><div class="card-head"><span>答错的词</span><span>${wrongItems.length} 个</span></div>
           <div class="list">${wrongItems
             .map((x) => {
-              const w = WORD_MAP.get(x.w);
+              const w = WORD_MAP.get(x.w) || { w: x.w, pos: '', zh: '' };
               return `<div class="list-item"><div><div class="lw">${esc(w.w)}</div><div class="lz">${esc(w.pos)} ${esc(w.zh)}</div></div></div>`;
             })
             .join('')}</div></section>`
@@ -941,7 +1068,9 @@
       <div class="done-hero">
         <div class="big">${q.score}<span class="muted" style="font-size:22px"> / ${q.items.length}</span></div>
         <div class="muted small">正确率 ${acc}%</div>
+        ${q.mock ? `<div class="band"><b>${bandOf(acc)}</b><span>Band 粗估</span></div>` : ''}
       </div>
+      ${q.mock ? '<p class="small muted center">这是词汇正确率换算的粗略参考，不等于真实雅思分数。想准确估分要做完整真题。</p>' : ''}
       ${list}
       <button class="btn primary" data-act="quiz:again">再来一组</button>
       <div class="row2">
@@ -1174,6 +1303,248 @@
     </div>`;
   }
 
+  /* ---------- 同义替换（雅思 paraphrase 训练） ---------- */
+
+  const SYN = [
+    ['increase', 'rise'], ['decrease', 'decline'], ['important', 'significant'],
+    ['problem', 'issue'], ['benefit', 'advantage'], ['drawback', 'disadvantage'],
+    ['difficult', 'challenging'], ['change', 'alter'], ['huge', 'enormous'],
+    ['show', 'demonstrate'], ['think', 'believe'], ['help', 'assist'],
+    ['need', 'require'], ['buy', 'purchase'], ['get', 'obtain'],
+    ['use', 'utilise'], ['begin', 'commence'], ['end', 'conclude'],
+    ['enough', 'sufficient'], ['many', 'numerous'], ['famous', 'renowned'],
+    ['danger', 'hazard'], ['quick', 'rapid'], ['tired', 'exhausted'],
+    ['rich', 'wealthy'], ['poor', 'impoverished'], ['job', 'occupation'],
+    ['choose', 'select'], ['main', 'primary'], ['typical', 'typical'],
+    ['reduce', 'cut'], ['raise', 'lift'], ['keep', 'maintain'],
+    ['build', 'construct'], ['damage', 'harm'], ['repair', 'fix'],
+    ['pay', 'compensate'], ['teach', 'instruct'], ['study', 'research'],
+    ['worry', 'concern'], ['happy', 'delighted'], ['sad', 'miserable'],
+    ['angry', 'furious'], ['cheap', 'affordable'], ['expensive', 'costly'],
+    ['modern', 'contemporary'], ['ancient', 'antique'], ['usually', 'generally'],
+    ['almost', 'nearly'], ['because', 'since'],
+  ].filter(function (x) { return x[0] !== x[1]; });
+
+  function synIntro() {
+    return `<div class="screen">
+      <h1>同义替换</h1>
+      <p class="small muted">雅思阅读和听力的题目几乎从不照抄原文，考的都是同义替换。这组练习就是把这个反射练出来。</p>
+      <div class="chips">
+        <div class="chip"><b>${SYN.length}</b><span>词组</span></div>
+        <div class="chip"><b>10</b><span>每组题</span></div>
+      </div>
+      <button class="btn primary" data-act="syn-start">开始练习</button>
+      <section class="card">
+        <div class="card-head"><span>词组预览</span><span>前 20 组</span></div>
+        <div class="syn-list">${SYN.slice(0, 20).map(function (p) {
+          return `<div class="syn-row"><b>${esc(p[0])}</b><span>≈</span><b>${esc(p[1])}</b></div>`;
+        }).join('')}</div>
+      </section>
+    </div>`;
+  }
+
+  function startSynQuiz() {
+    const pool = SYN.slice();
+    const pairs = shuffle(pool, Math.random).slice(0, 10);
+    const items = pairs.map(function (p) {
+      const wrongPool = SYN.filter(function (q) { return q[1] !== p[1] && q[0] !== p[0]; });
+      const distract = sample(wrongPool, 3).map(function (q) { return q[1]; });
+      const opts = shuffle([p[1]].concat(distract), Math.random);
+      return {
+        w: p[0], kind: 'syn', prompt: p[0], hint: '选出意思最接近的词',
+        options: opts, answer: opts.indexOf(p[1]), chosen: null, correct: null,
+      };
+    });
+    S.quiz = { kind: 'syn', items: items, pos: 0, answered: false, score: 0, done: false };
+    S.ui.tab = 'quiz';
+    S.ui.screen = null;
+    save();
+    render();
+  }
+
+  /* ---------- 口语 Part 2 ---------- */
+
+  const CUE = [
+    ['Describe a person who has influenced you.', ['who this person is', 'how you know them', 'what they did', 'and explain why they influenced you']],
+    ['Describe a place you like to spend time in.', ['where it is', 'how often you go there', 'what you do there', 'and explain why you like it']],
+    ['Describe a skill you learned recently.', ['what the skill is', 'how you learned it', 'how long it took', 'and explain how you felt about it']],
+    ['Describe a memorable journey.', ['where you went', 'who you went with', 'what happened', 'and explain why it was memorable']],
+    ['Describe an important decision you made.', ['what the decision was', 'when you made it', 'what the alternatives were', 'and explain why it was important']],
+    ['Describe a piece of technology you find useful.', ['what it is', 'how you use it', 'how long you have had it', 'and explain why it is useful']],
+    ['Describe a book or film that impressed you.', ['what it was about', 'when you read or watched it', 'what was special', 'and explain why it impressed you']],
+    ['Describe a time you helped someone.', ['who you helped', 'what the situation was', 'how you helped', 'and explain how you felt']],
+    ['Describe a tradition in your country.', ['what it is', 'when it happens', 'who takes part', 'and explain why it matters']],
+    ['Describe a goal you want to achieve.', ['what the goal is', 'when you set it', 'what you are doing about it', 'and explain why it matters to you']],
+    ['Describe a city you would like to live in.', ['which city it is', 'how you know about it', 'what you would do there', 'and explain why you would like to live there']],
+    ['Describe an interesting conversation you had.', ['who you talked to', 'what you talked about', 'where it happened', 'and explain why it was interesting']],
+    ['Describe a change in your daily routine.', ['what changed', 'when it changed', 'why it changed', 'and explain how you feel about it']],
+    ['Describe something you bought that you are happy with.', ['what it is', 'where you bought it', 'how much it cost', 'and explain why you are happy with it']],
+    ['Describe a person who is good at their job.', ['who they are', 'what they do', 'how you know them', 'and explain why they are good at it']],
+    ['Describe an occasion when you were late.', ['what the occasion was', 'why you were late', 'what happened', 'and explain how you dealt with it']],
+    ['Describe a hobby you enjoy.', ['what the hobby is', 'when you started', 'how often you do it', 'and explain why you enjoy it']],
+    ['Describe a piece of advice you received.', ['what the advice was', 'who gave it', 'when you received it', 'and explain whether you followed it']],
+  ];
+
+  let speakTimer = null;
+  let speakState = { ends: 0, label: '' };
+
+  function cueScreen() {
+    return `<div class="screen">
+      <h1>口语 Part 2</h1>
+      <p class="small muted">Part 2 是给一张话题卡，1 分钟准备、2 分钟独白。选一张卡，按计时器说满两分钟——卡壳也要撑住。</p>
+      <div class="cues">
+        ${CUE.map(function (c, i) {
+          return `<button class="cue" data-act="cue:${i}">
+            <b>${esc(c[0])}</b>
+            <span>${c[1].length} 个提示点</span>
+          </button>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  function cueDetail(i) {
+    const c = CUE[i];
+    if (!c) return cueScreen();
+    return `<div class="screen">
+      <span class="ncat">CUE CARD ${i + 1}</span>
+      <h1 class="dtitle">${esc(c[0])}</h1>
+      <div class="dblock">
+        <div class="dlab">YOU SHOULD SAY</div>
+        <ul class="cue-points">${c[1].map(function (p) { return '<li>' + esc(p) + '</li>'; }).join('')}</ul>
+      </div>
+      <div class="speak-timer" id="speakTimer">--:--</div>
+      <button class="btn primary" data-act="cue-prep:${i}">1 分钟准备</button>
+      <button class="btn ghost" data-act="cue-talk:${i}">2 分钟作答</button>
+      <button class="btn ghost" data-act="back">换一张卡</button>
+      <p class="small muted center">说的时候尽量用上你学过的词，别背模板。</p>
+    </div>`;
+  }
+
+  function runSpeakTimer(seconds, label) {
+    speakState = { ends: Date.now() + seconds * 1000, label: label };
+    tickSpeak();
+    if (speakTimer) clearInterval(speakTimer);
+    speakTimer = setInterval(function () {
+      if (!document.getElementById('speakTimer')) { clearInterval(speakTimer); speakTimer = null; return; }
+      tickSpeak();
+    }, 500);
+  }
+
+  function tickSpeak() {
+    const el = document.getElementById('speakTimer');
+    if (!el) return;
+    const left = Math.max(0, Math.round((speakState.ends - Date.now()) / 1000));
+    el.textContent = (speakState.label ? speakState.label + ' ' : '') + Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+    el.classList.toggle('done', left === 0);
+  }
+
+  /* ---------- 写作 Task 2 ---------- */
+
+  const WTOPIC = [
+    'Some people believe that university education should be free for everyone. To what extent do you agree or disagree?',
+    'Governments should spend more money on public transport than on roads. Do you agree or disagree?',
+    'Many young people today change jobs frequently. What are the reasons and is this a positive or negative development?',
+    'Some argue that technology has made people less social. Discuss both views and give your own opinion.',
+    'Should schools teach practical skills like cooking and personal finance instead of traditional subjects?',
+    'Environmental protection is often seen as a barrier to economic growth. Discuss both sides.',
+    'In many countries, the gap between rich and poor is widening. What problems does this cause and what solutions exist?',
+    'Some people think that the best way to reduce crime is to give longer prison sentences. Others believe there are better alternatives.',
+    'Advertising aimed at children should be banned. To what extent do you agree?',
+    'Remote work is replacing the traditional office. Is this a positive or negative change?',
+  ];
+
+  const WPHRASE = [
+    ['While it is true that ...', '让步开头，后面接 but 转折，Task 2 最常用的骨架'],
+    ['It is often argued that ...', '引出对立观点，比自己"It is said"高级'],
+    ['This trend can be attributed to ...', '分析成因，比 "because of" 更有分析味'],
+    ['The primary reason for this is ...', '把最重要的原因拎出来，避免罗列'],
+    ['A telling example is ...', '举例，比 "for example" 有信息量'],
+    ['This does not mean that ...', '限定观点，防止绝对化被扣分'],
+    ['Such measures, however, may be difficult to enforce.', '给对策加限定，显示辩证'],
+    ['In conclusion, while X offers benefits, Y should not be overlooked.', '结尾两边都收一句，不偏激'],
+  ];
+
+  function writingScreen() {
+    const drafts = S.writing || {};
+    return `<div class="screen">
+      <h1>写作 Task 2</h1>
+      <p class="small muted">40 分钟写 250 词。先在脑子里过一遍立场和两段论证，再动笔。</p>
+      <h3>话题库</h3>
+      <div class="cues">
+        ${WTOPIC.map(function (t, i) {
+          return `<button class="cue" data-act="wtop:${i}">
+            <b>${esc(t)}</b>
+            <span>${drafts[i] ? '已写 ' + drafts[i].length + ' 字' : '未开始'}</span>
+          </button>`;
+        }).join('')}
+      </div>
+      <h3>高频句型</h3>
+      <div class="syn-list">
+        ${WPHRASE.map(function (p) {
+          return `<div class="phr"><b>${esc(p[0])}</b><span>${esc(p[1])}</span></div>`;
+        }).join('')}
+      </div>
+    </div>`;
+  }
+
+  function wtopicScreen(i) {
+    const t = WTOPIC[i];
+    if (!t) return writingScreen();
+    const d = (S.writing || {})[i] || '';
+    return `<div class="screen">
+      <span class="ncat">TASK 2 · ${i + 1}</span>
+      <h1 class="dtitle small">${esc(t)}</h1>
+      <textarea id="wdraft" class="draft" placeholder="在这里写提纲或全文，只存在本机…">${esc(d)}</textarea>
+      <p class="small muted center"><span id="wcount">${d.length}</span> 字符 · 目标 250 词以上</p>
+      <button class="btn ghost" data-act="back">返回</button>
+    </div>`;
+  }
+
+  /* ---------- 阅读题型技巧 ---------- */
+
+  const RTIPS = [
+    ['TRUE / FALSE / NOT GIVEN', 'TRUE 是同义改写；FALSE 是明确矛盾；NOT GIVEN 是原文根本没提或无法判断。「没提」和「说反了」是两回事，这是最容易失分的地方。'],
+    ['Matching Headings', '先读标题不读选项，抓住每段首句和转折句；先做有把握的，剩下的用排除法。注意段落中间的 however 后面往往是真正的主题。'],
+    ['Matching Information', '题目问「哪一段提到 X」，X 常被改写。先扫题干关键词找一个最独特的词（数字、专有名词），再定位。'],
+    ['Sentence / Summary Completion', '注意字数限制和语法一致性。填空前先判断所填词性，名词单复数、动词时态都要跟原句匹配。'],
+    ['Multiple Choice', '选项越长越可能是原文改写；出现绝对词（all / never / only）通常是错的。四个选项里常有一个是「部分正确但太绝对」。'],
+    ['时间分配', '学术类阅读 60 分钟 3 篇 40 题。建议 17 / 20 / 20 分钟，最后一篇留 3 分钟填卡，别在某一道题上超过 2 分钟。'],
+  ];
+
+  function readingScreen() {
+    return `<div class="screen">
+      <h1>阅读技巧</h1>
+      <p class="small muted">阅读不是读得越多越快，是知道题目在考什么。这六条是最常被忽略的。</p>
+      ${RTIPS.map(function (t) {
+        return `<section class="card tip">
+          <div class="tip-title">${esc(t[0])}</div>
+          <div class="tip-body">${esc(t[1])}</div>
+        </section>`;
+      }).join('')}
+    </div>`;
+  }
+
+  /* ---------- 训练入口 ---------- */
+
+  function trainGrid() {
+    const items = [
+      ['speaking', '口语 Part 2', CUE.length + ' 张话题卡', 'spark'],
+      ['writing', '写作 Task 2', WTOPIC.length + ' 个话题', 'study'],
+      ['reading', '阅读技巧', RTIPS.length + ' 条', 'library'],
+      ['syn', '同义替换', SYN.length + ' 组', 'quiz'],
+    ];
+    return `<div class="train-grid">
+      ${items.map(function (it) {
+        return `<button class="train" data-act="open:${it[0]}">
+          <span class="ico">${svg(it[3])}</span>
+          <b>${it[1]}</b>
+          <span>${it[2]}</span>
+        </button>`;
+      }).join('')}
+    </div>`;
+  }
+
   function settingsScreen() {
     const seg = (type, values, current, suffix) =>
       `<div class="seg">${values
@@ -1189,6 +1560,11 @@
       </div>`;
     return `<div class="screen">
       <h1>设置</h1>
+      <h3>考试日期</h3>
+      <div class="date-row">
+        <input id="examDate" type="date" value="${esc(S.settings.examDate || '')}">
+        ${S.settings.examDate ? '<button class="icon-btn sm" data-act="clear-exam" aria-label="清除">×</button>' : ''}
+      </div>
       <h3>每天新词</h3>
       ${stepper('new', S.settings.dailyNew, 5, 200, 5, '个新词 / 天')}
       ${seg('new', [5, 10, 15, 20, 30], S.settings.dailyNew, '')}
@@ -1259,9 +1635,23 @@
 
   /* ---------- 主渲染 ---------- */
 
+  function backTarget(screen) {
+    if (typeof screen !== 'string') return null;
+    if (screen.indexOf('cue:') === 0) return 'speaking';
+    if (screen.indexOf('wtop:') === 0) return 'writing';
+    if (screen.indexOf('words:') === 0) return null;
+    return null;
+  }
+
   function screenHTML() {
     if (S.ui.screen === 'settings') return settingsScreen();
     if (S.ui.screen === 'decks') return decksScreen();
+    if (S.ui.screen === 'speaking') return cueScreen();
+    if (S.ui.screen === 'syn') return synIntro();
+    if (S.ui.screen === 'writing') return writingScreen();
+    if (S.ui.screen === 'reading') return readingScreen();
+    if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('cue:') === 0) return cueDetail(Number(S.ui.screen.slice(4)));
+    if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('wtop:') === 0) return wtopicScreen(Number(S.ui.screen.slice(5)));
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) return wordsScreen(S.ui.screen.slice(6));
     if (S.ui.screen === 'wrong') return wrongScreen();
     if (S.ui.tab === 'study') return studyScreen();
@@ -1275,6 +1665,23 @@
     return todayScreen();
   }
 
+  function tickMock() {
+    const q = S.quiz;
+    const el = document.getElementById('mockTimer');
+    if (!q || !q.mock || q.done) return;
+    const left = Math.max(0, Math.round((q.ends - Date.now()) / 1000));
+    if (el) el.textContent = Math.floor(left / 60) + ':' + String(left % 60).padStart(2, '0');
+    if (left <= 0) {
+      q.done = true;
+      save();
+      render();
+    }
+  }
+
+  setInterval(function () {
+    if (S.quiz && S.quiz.mock && !S.quiz.done) tickMock();
+  }, 1000);
+
   function render() {
     document.getElementById('topbar').innerHTML = topbarHTML();
     const view = document.getElementById('view');
@@ -1284,6 +1691,11 @@
     view.className = 'view' + (focus ? ' no-tabs' : '');
     view.innerHTML = screenHTML() + modalHTML();
     document.getElementById('tabbar').innerHTML = focus ? '' : tabbarHTML();
+    if (S.quiz && !S.quiz.done && !S.quiz.answered) {
+      const it = S.quiz.items[S.quiz.pos];
+      if (it && it.kind === 'listen') speak(it.w);
+    }
+    tickMock();
     save();
   }
 
@@ -1310,6 +1722,19 @@
   }
 
   document.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'examDate') {
+      S.settings.examDate = e.target.value || '';
+      save();
+      return;
+    }
+    if (e.target && e.target.id === 'wdraft') {
+      S.writing = S.writing || {};
+      S.writing[S.ui.screen.slice(5)] = e.target.value;
+      const c = document.getElementById('wcount');
+      if (c) c.textContent = String(e.target.value.length);
+      save();
+      return;
+    }
     if (!e.target || e.target.id !== 'wq') return;
     wordsView.q = e.target.value;
     wordsView.limit = 60;
@@ -1333,7 +1758,7 @@
         if (arg === 'news' && ((S.news && S.news.items || []).length === 0 || newsAge() > NEWS_TTL)) fetchNews(false);
         break;
       case 'back':
-        S.ui.screen = null;
+        S.ui.screen = backTarget(S.ui.screen);
         S.ui.confirm = null;
         save();
         render();
@@ -1362,6 +1787,47 @@
         S.ui.tab = 'today';
         save();
         render();
+        break;
+      case 'apply-plan': {
+        const p = planInfo();
+        if (!p) break;
+        S.settings.dailyNew = Math.max(5, Math.min(200, p.perDay));
+        save();
+        render();
+        toast('已设为每天 ' + S.settings.dailyNew + ' 个新词');
+        break;
+      }
+      case 'clear-exam':
+        S.settings.examDate = '';
+        save();
+        render();
+        break;
+      case 'syn-start':
+        startSynQuiz();
+        break;
+      case 'cue': {
+        S.ui.screen = 'cue:' + arg;
+        save();
+        render();
+        window.scrollTo(0, 0);
+        break;
+      }
+      case 'cue-prep':
+      case 'cue-talk':
+        runSpeakTimer(act === 'cue-prep' ? 60 : 120, act === 'cue-prep' ? '准备' : '作答');
+        break;
+      case 'wtop': {
+        S.ui.screen = 'wtop:' + arg;
+        save();
+        render();
+        window.scrollTo(0, 0);
+        break;
+      }
+      case 'say':
+        speak(parts.slice(1).join(':'));
+        break;
+      case 'mock-start':
+        startMock();
         break;
       case 'quiz':
         if (arg === 'start') startQuiz(parts[2]);
@@ -1508,7 +1974,7 @@
       return true;
     }
     if (S.ui.screen) {
-      S.ui.screen = null;
+      S.ui.screen = backTarget(S.ui.screen);
       render();
       return true;
     }
