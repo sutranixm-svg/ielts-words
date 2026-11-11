@@ -39,7 +39,7 @@ setTimeout(() => {
     assert(text().includes('今日目标'), 'today screen renders');
     assert(doc.querySelectorAll('.tab').length === 5, 'five tabs');
 
-    click('[data-act="start"]');
+    click('[data-act^="start"]');
     assert(doc.querySelector('.flash .word'), 'study card shows a word');
     const firstWord = doc.querySelector('.flash .word').textContent;
     assert(!doc.querySelector('.meaning'), 'meaning hidden before reveal');
@@ -50,7 +50,7 @@ setTimeout(() => {
     assert(doc.querySelector('.count').textContent.startsWith('2/'), 'advances to card 2');
 
     let guard = 0;
-    while (!doc.querySelector('[data-act="start"]') && guard++ < 100) {
+    while (!doc.querySelector('[data-act^="start"]') && guard++ < 100) {
       const reveal = doc.querySelector('[data-act="reveal"]');
       if (reveal) reveal.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
       const g = doc.querySelector('[data-act="grade:good"]');
@@ -61,8 +61,9 @@ setTimeout(() => {
     const st = window.__ielts.state();
     assert(Object.keys(st.words).length >= 10, 'progress persisted in memory');
 
-    click('[data-act="start"]');
-    assert(doc.querySelector('.count') && doc.querySelector('.count').textContent.includes('/10'), 'drill group starts');
+    click('[data-act^="start"]');
+    const cnt = doc.querySelector('.count') ? doc.querySelector('.count').textContent : '';
+    assert(cnt.includes('/15'), '加练组开始（15 张）：' + cnt);
 
     click('[data-act="pause"]');
     click('[data-act="tab:quiz"]');

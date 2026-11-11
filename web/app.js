@@ -10,6 +10,9 @@
   const MASTER_BOX = 4;
   const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
   const KINDS = ['zh', 'en', 'spell'];
+  // 艾宾浩斯复习间隔（天）：错词按这个节奏往后推
+  const EBB = [1, 2, 4, 7, 15, 30, 60];
+  const WRONG_BATCH = 20;
   const REPO = 'sutranixm-svg/ielts-words';
   const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
@@ -119,7 +122,8 @@
   }
   function ensureRec(w) {
     if (!S.words[w]) {
-      S.words[w] = { box: 0, due: today(), seen: 0, right: 0, wrong: 0, first: today(), last: null };
+      S.words[w] = { box: 0, due: today(), seen: 0, right: 0, wrong: 0, first: today(), last: null,
+                     wstep: 0, wdue: today(), wlast: null };
     }
     return S.words[w];
   }
@@ -138,6 +142,7 @@
       rec.wrong += 1;
       rec.box = 0;
       rec.due = addDays(day, 1);
+      markWrong(rec, day);
     }
     if (first) rec.first = day;
     return rec;
@@ -154,6 +159,42 @@
   function deckWords() {
     const set = new Set(activeDecks());
     return WORDS.filter((w) => set.has(w.t));
+  }
+
+  /* ---------- 错词复习（艾宾浩斯曲线） ---------- */
+
+  function wrongRec(w) {
+    const r = S.words[w];
+    if (!r) return null;
+    if (typeof r.wstep !== 'number') r.wstep = 0;
+    if (!r.wdue) r.wdue = r.last || today();
+    return r;
+  }
+
+  function markWrong(rec, day) {
+    rec.wstep = 0;
+    rec.wdue = addDays(day, EBB[0]);
+    rec.wlast = day;
+  }
+
+  function markWrongPassed(rec, day) {
+    rec.wstep = Math.min(EBB.length - 1, (rec.wstep || 0) + 1);
+    rec.wdue = addDays(day, EBB[rec.wstep]);
+    rec.wlast = day;
+  }
+
+  function wrongPool() {
+    return deckWords().filter((w) => {
+      const r = S.words[w.w];
+      return r && r.seen && r.wrong > 0 && r.box < MASTER_BOX;
+    });
+  }
+
+  function wrongDueOn(day) {
+    return wrongPool().filter((w) => {
+      const r = wrongRec(w.w);
+      return r && (r.wdue || day) <= day;
+    });
   }
 
   /* ---------- 统计 ---------- */
@@ -216,6 +257,7 @@
       streak,
       week,
       wrong,
+      wrongDue: wrongDueOn(day).length,
       topics: rows,
       accuracy: right + wrongN ? Math.round((right / (right + wrongN)) * 100) : 0,
     };
@@ -245,7 +287,8 @@
     const todayNew = (S.days[day] && S.days[day].new) || 0;
     const cap = Math.max(0, S.settings.dailyNew - todayNew);
     const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen);
-    const newPicked = shuffle(unseen, rnd).slice(0, mode === 'extra' ? 10 : cap);
+    const extraSize = Math.max(10, S.settings.dailyNew || 15);
+    const newPicked = shuffle(unseen, rnd).slice(0, mode === 'extra' ? extraSize : cap);
 
     if (mode === 'review') return { queue: due.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: due.length };
     if (mode === 'new' || mode === 'extra') return { queue: newPicked.map((w) => ({ w: w.w, kind: 'new' })), newCount: newPicked.length, reviewCount: 0 };
@@ -272,7 +315,9 @@
     let built = buildQueue(mode);
     if (!built.queue.length && mode === 'daily') built = buildQueue('drill');
     if (!built.queue.length) {
-      toast(mode === 'review' ? '还没有到期的复习词' : '今天没有要学的词了，先测验一下吧');
+      toast(mode === 'extra'
+        ? '新词已经全学完了，去测验巩固一下吧'
+        : mode === 'review' ? '还没有到期的复习词' : '今天没有要学的词了，先测验一下吧');
       return;
     }
     S.session = {
@@ -394,12 +439,36 @@
     const seen = all.filter((w) => S.words[w.w] && S.words[w.w].seen);
     let pool;
     let picked;
-    if (kind === 'wrong') {
-      pool = all.filter((w) => {
-        const r = S.words[w.w];
-        return r && r.seen && r.wrong > 0 && r.box < MASTER_BOX;
-      });
-      picked = sample(pool, Math.min(10, pool.length));
+    if (kind === 'wrong' || kind === 'wrong-all') {
+      const day = today();
+      const dueList = wrongDueOn(day);
+      const full = wrongPool();
+      let source;
+      if (kind === 'wrong-all') {
+        // 全部过一遍：最久没复习的排前面，保证能轮到每一个
+        source = full.slice().sort((a, b) => {
+          const ra = wrongRec(a.w) || {};
+          const rb = wrongRec(b.w) || {};
+          return String(ra.wlast || '').localeCompare(String(rb.wlast || '')) || a.w.localeCompare(b.w);
+        });
+      } else if (dueList.length >= 4) {
+        // 到期优先；同批里最久没复习的在前，再用当天轮次打散，避免每轮都是同一批
+        S.wrongRound = (S.wrongRound || 0) + 1;
+        const rnd = mulberry32(dayNum(day) * 31 + S.wrongRound);
+        source = shuffle(dueList.slice(), rnd).sort((a, b) => {
+          const ra = wrongRec(a.w) || {};
+          const rb = wrongRec(b.w) || {};
+          return String(ra.wlast || '').localeCompare(String(rb.wlast || ''));
+        });
+      } else {
+        source = full.slice().sort((a, b) => {
+          const ra = wrongRec(a.w) || {};
+          const rb = wrongRec(b.w) || {};
+          return String(ra.wdue || '').localeCompare(String(rb.wdue || ''));
+        });
+      }
+      pool = source;
+      picked = source.slice(0, Math.min(WRONG_BATCH, source.length));
       if (picked.length < 4) {
         toast('错词不足 4 个，先做普通测验吧');
         return;
@@ -415,7 +484,7 @@
     const items = picked.map((w, i) => {
       let k = kind;
       if (kind === 'mix') k = KINDS[Math.floor(Math.random() * KINDS.length)];
-      if (kind === 'wrong') k = i % 2 === 0 ? 'zh' : 'en';
+      if (kind === 'wrong' || kind === 'wrong-all') k = i % 3 === 2 ? 'spell' : (i % 2 === 0 ? 'zh' : 'en');
       if (!KINDS.includes(k)) k = 'zh';
       return makeItem(w, k, pool);
     });
@@ -435,7 +504,25 @@
     q.answered = true;
     if (item.correct) q.score += 1;
     const rec = S.words[item.w];
-    if (rec && rec.seen) applyGrade(rec, item.correct ? 'good' : 'again');
+    if (rec && rec.seen) {
+      if (q.kind === 'wrong' || q.kind === 'wrong-all') {
+        const day = today();
+        if (item.correct) {
+          rec.right = (rec.right || 0) + 1;
+          rec.box = Math.min(5, (rec.box || 0) + 1);
+          rec.due = addDays(day, INTERVALS[rec.box]);
+          markWrongPassed(rec, day);
+        } else {
+          rec.wrong = (rec.wrong || 0) + 1;
+          rec.box = 0;
+          rec.due = addDays(day, 1);
+          markWrong(rec, day);
+        }
+        rec.last = day;
+      } else {
+        applyGrade(rec, item.correct ? 'good' : 'again');
+      }
+    }
     save();
     render();
   }
@@ -661,6 +748,7 @@
       </div>
 
       <button class="btn primary" data-act="start"><span class="ico">${svg('play')}</span>${label}</button>
+      <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <button class="btn ghost sm scope" data-act="open:decks">
         <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${WORDS.filter((w) => activeDecks().indexOf(w.t) >= 0).length} 词</b>
       </button>
@@ -732,6 +820,7 @@
       </div>
       <button class="btn primary" data-act="start">开始今日学习</button>
       ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.due} 个</button>` : ''}
+      <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <p class="small muted center">记录保存在本机，不会上传。</p>
     </div>`;
   }
@@ -756,7 +845,7 @@
         <div class="chip"><b>${s.reviewCount}</b><span>复习</span></div>
         <div class="chip"><b>${total}</b><span>总卡片</span></div>
       </div>
-      <button class="btn primary" data-act="start">再学一组</button>
+      <button class="btn primary" data-act="start:extra">再学一组（加练 ${Math.max(10, S.settings.dailyNew || 15)} 个）</button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:quiz">去测验</button>
         <button class="btn ghost sm" data-act="tab:today">回今天</button>
@@ -1093,13 +1182,20 @@
             `<button class="seg-item ${v === current ? 'active' : ''}" data-act="set:${type}:${v}">${v}${suffix}</button>`
         )
         .join('')}</div>`;
+    const stepper = (type, value, min, max, step, unit) => `<div class="stepper">
+        <button class="step-btn" data-act="bump:${type}:-${step}" aria-label="减少">−</button>
+        <div class="step-val"><b>${value}</b><span>${unit}</span></div>
+        <button class="step-btn" data-act="bump:${type}:${step}" aria-label="增加">＋</button>
+      </div>`;
     return `<div class="screen">
       <h1>设置</h1>
       <h3>每天新词</h3>
+      ${stepper('new', S.settings.dailyNew, 5, 200, 5, '个新词 / 天')}
       ${seg('new', [5, 10, 15, 20, 30], S.settings.dailyNew, '')}
       <h3>每日目标（张卡片）</h3>
+      ${stepper('goal', S.settings.dailyGoal, 10, 300, 10, '张卡片 / 天')}
       ${seg('goal', [10, 20, 30, 50], S.settings.dailyGoal, '')}
-      <p class="small muted">调整后从下一组开始生效。学习记录只保存在这台手机上。</p>
+      <p class="small muted">学完当天配额后，首页还能点「加练」继续学新词，不受配额限制。调整当天即时生效。</p>
       <button class="btn danger" data-act="ask-reset">重置学习进度</button>
       <button class="btn ghost" data-act="back">返回</button>
       <button class="btn ghost" data-act="check-update">检查更新</button>
@@ -1109,26 +1205,40 @@
 
   function wrongScreen() {
     const st = stats();
-    if (!st.wrong.length) {
+    const due = st.wrongDue;
+    const total = st.wrong.length;
+    if (!total) {
       return `<div class="screen">
         <h1>错词本</h1>
-        <p class="small muted">还没有错词。答错或不认识的词会留在这里，掌握后自动移出。</p>
+        <p class="small muted">还没有错词。答错或不认识的词会留在这里，按 1/2/4/7/15/30/60 天的间隔安排复习，掌握后自动移出。</p>
         <button class="btn ghost" data-act="back">返回</button>
       </div>`;
     }
     return `<div class="screen">
       <h1>错词本</h1>
-      <p class="small muted">答错或不认识的词会留在这里，连续答对、掌握后自动移出。</p>
+      <p class="small muted">答对往后推一档，答错回到第 1 天。每次最多 ${WRONG_BATCH} 个，轮流过一遍，不会总是同一批。</p>
+      <div class="chips">
+        <div class="chip"><b>${due}</b><span>今天到期</span></div>
+        <div class="chip"><b>${total}</b><span>错词总数</span></div>
+        <div class="chip"><b>${total - due}</b><span>未到期</span></div>
+      </div>
+      <button class="btn primary" data-act="wrong-quiz" ${due < 4 && total < 4 ? 'disabled' : ''}>
+        ${due >= 4 ? `复习到期 ${Math.min(due, WRONG_BATCH)} 个${due > WRONG_BATCH ? '（共 ' + due + '）' : ''}` : '先过一遍错词'}
+      </button>
+      <button class="btn ghost" data-act="wrong-quiz-all" ${total < 4 ? 'disabled' : ''}>全部过一遍（${total} 个）</button>
       <section class="card">
+        <div class="card-head"><span>错词清单</span><span>下次复习</span></div>
         <div class="list">${st.wrong
-          .slice(0, 40)
-          .map(
-            (x) =>
-              `<div class="list-item"><div><div class="lw">${esc(x.w)}</div><div class="lz">${esc(x.pos)} ${esc(x.zh)}</div></div><div class="lt">错 ${x.count} 次</div></div>`
-          )
+          .slice(0, 50)
+          .map((x) => {
+            const r = wrongRec(x.w) || {};
+            const d = String(r.wdue || today());
+            const tag = d <= today() ? '今天' : d.slice(5).replace('-', '/');
+            return `<div class="list-item"><div><div class="lw">${esc(x.w)}</div><div class="lz">${esc(x.pos)} ${esc(x.zh)}</div></div><div class="lt">错 ${x.count} 次 · ${esc(tag)}</div></div>`;
+          })
           .join('')}</div>
+        ${total > 50 ? '<p class="small muted center">只列出前 50 个</p>' : ''}
       </section>
-      <button class="btn primary" data-act="wrong-quiz">复习这些错词</button>
       <button class="btn danger" data-act="ask-clear">清空错词记录</button>
       <button class="btn ghost" data-act="back">返回</button>
     </div>`;
@@ -1266,6 +1376,9 @@
       case 'wrong-quiz':
         startQuiz('wrong');
         break;
+      case 'wrong-quiz-all':
+        startQuiz('wrong-all');
+        break;
       case 'open':
         S.ui.screen = arg;
         S.ui.confirm = null;
@@ -1279,6 +1392,14 @@
         save();
         render();
         break;
+      case 'bump': {
+        const dir = Number(parts[2]) || 0;
+        if (arg === 'new') S.settings.dailyNew = Math.max(5, Math.min(200, (S.settings.dailyNew || 15) + dir));
+        if (arg === 'goal') S.settings.dailyGoal = Math.max(10, Math.min(300, (S.settings.dailyGoal || 20) + dir));
+        save();
+        render();
+        break;
+      }
       case 'ask-reset':
         S.ui.confirm = 'reset';
         render();
