@@ -28,6 +28,9 @@ import java.net.URL;
 
 public class MainActivity extends Activity {
     private static final String UPDATE_FILE = "update.apk";
+    // 下载地址由网页从镜像清单里给出，用 \n 分隔，按顺序逐个尝试
+    private static final String LAST_RESORT =
+            "https://gh-proxy.com/https://github.com/sutranixm-svg/ielts-words/raw/dist/ielts-vocab.apk";
 
     private WebView web;
     private boolean dark;
@@ -83,7 +86,21 @@ public class MainActivity extends Activity {
             new Thread(new Runnable() {
                 @Override
                 public void run() {
-                    download(url);
+                    java.util.List<String> list = new java.util.ArrayList<String>();
+                    for (String u : url.split("\n")) {
+                        String t = u.trim();
+                        if (t.startsWith("http")) list.add(t);
+                    }
+                    if (list.isEmpty()) {
+                        emit("error:没有可用的下载地址");
+                        return;
+                    }
+                    list.add(LAST_RESORT);
+                    for (int i = 0; i < list.size(); i++) {
+                        if (i > 0) emit("mirror:" + i);
+                        if (download(list.get(i), 0)) return;
+                    }
+                    emit("error:所有下载源都失败");
                 }
             }).start();
         }
@@ -171,25 +188,25 @@ public class MainActivity extends Activity {
         return recordName == null ? "" : recordName;
     }
 
-    private void download(String url) {
+    private boolean download(String url, int retries) {
         File out = new File(getCacheDir(), UPDATE_FILE);
         if (out.exists() && !out.delete()) {
             emit("error:无法清理旧文件");
-            return;
+            return false;
         }
         HttpURLConnection conn = null;
         InputStream in = null;
         FileOutputStream fos = null;
         try {
             conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setConnectTimeout(20000);
-            conn.setReadTimeout(30000);
+            conn.setConnectTimeout(15000);
+            conn.setReadTimeout(45000);
             conn.setRequestProperty("User-Agent", "ielts-words-updater");
             conn.setInstanceFollowRedirects(true);
             int code = conn.getResponseCode();
             if (code != 200) {
                 emit("error:HTTP " + code);
-                return;
+                return false;
             }
             long total = conn.getContentLength();
             in = conn.getInputStream();
@@ -215,12 +232,14 @@ public class MainActivity extends Activity {
             if (total > 0 && got != total) {
                 out.delete();
                 emit("error:下载不完整");
-                return;
+                return false;
             }
             install(out);
+            return true;
         } catch (Exception e) {
             if (out.exists()) out.delete();
             emit("error:" + e.getClass().getSimpleName());
+            return false;
         } finally {
             try { if (fos != null) fos.close(); } catch (Exception ignored) { }
             try { if (in != null) in.close(); } catch (Exception ignored) { }

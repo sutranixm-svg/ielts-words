@@ -29,15 +29,27 @@ function boot({ version = '1.2.0', tag = 'v9.9.9', withBridge = true } = {}) {
           platform: () => 'android',
         };
       }
-      window.fetch = () =>
-        Promise.resolve({
-          ok: true,
-          json: () =>
-            Promise.resolve({
-              tag_name: tag,
-              assets: [{ name: 'ielts-vocab.apk', size: 745472, browser_download_url: ASSET }],
-            }),
-        });
+      window.fetch = (url) => {
+        const u = String(url);
+        if (u.indexOf('version.json') >= 0) {
+          // 国内镜像的版本清单
+          return Promise.resolve({
+            ok: true,
+            json: () => Promise.resolve({ version: tag.replace(/^v/, ''), urls: [ASSET], size: 745472 }),
+          });
+        }
+        if (u.indexOf('api.github.com') >= 0) {
+          return Promise.resolve({
+            ok: true,
+            json: () =>
+              Promise.resolve({
+                tag_name: tag,
+                assets: [{ name: 'ielts-vocab.apk', size: 745472, browser_download_url: ASSET }],
+              }),
+          });
+        }
+        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) });
+      };
     },
   });
   return { dom, window: dom.window, doc: dom.window.document, calls, errors };
@@ -67,7 +79,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 2) 一键更新调用原生
     click(t.window, '[data-act="update"]');
     assert(t.calls.length === 1, '点击一键更新调用原生接口');
-    assert(t.calls[0] === ASSET, '传入正确的下载地址');
+    assert(t.calls[0] === ASSET, '把镜像地址列表交给原生');
     assert(text(t.window).includes('下载中'), '进入下载态');
 
     // 3) 进度回传
@@ -110,6 +122,27 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     assert(set.includes('8 个主题'), '设置页显示 8 个主题');
     assert(set.includes('v1.2.0'), '设置页显示当前版本');
     t3.window.close();
+
+    // 镜像全挂 → 回落 GitHub API
+    const t4 = boot({ version: '1.0.0', tag: 'v9.9.9' });
+    t4.window.fetch = (url) => {
+      const u = String(url);
+      if (u.indexOf('version.json') >= 0) return Promise.resolve({ ok: false, status: 503, json: () => Promise.resolve({}) });
+      if (u.indexOf('api.github.com') >= 0) {
+        return Promise.resolve({ ok: true, json: () => Promise.resolve({
+          tag_name: 'v9.9.9',
+          assets: [{ name: 'ielts-vocab.apk', size: 745472, browser_download_url: ASSET }],
+        }) });
+      }
+      return new Promise(() => {});
+    };
+    click(t4.window, '[data-act="tab:library"]');
+    click(t4.window, '[data-act="open:settings"]');
+    click(t4.window, '[data-act="check-update"]');
+    await sleep(500);
+    assert(t4.window.__ielts.state().update && t4.window.__ielts.state().update.version === '9.9.9',
+      '镜像失败时回落 GitHub API 仍能拿到版本');
+    t4.window.close();
 
     console.log('\nUPDATE TEST PASS');
     process.exit(0);

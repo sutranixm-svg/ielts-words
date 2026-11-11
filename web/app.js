@@ -17,6 +17,12 @@
   const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
   const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
+  // 更新检查优先走国内可达的镜像，最后才回落到 GitHub API
+  const VER_MIRRORS = [
+    'https://gh-proxy.com/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://ghfast.top/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+  ];
   const NEWS_TTL = 6 * 3600 * 1000;
   const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
 
@@ -658,14 +664,39 @@
     return 0;
   }
 
+  function fetchVersion() {
+    let i = 0;
+    function next() {
+      if (i >= VER_MIRRORS.length) {
+        // 镜像全挂就退回 GitHub API
+        return fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+          .then((j) => ({
+            tag: j && j.tag_name ? j.tag_name : '',
+            urls: ((j && j.assets) || []).map((a) => a.browser_download_url),
+            size: ((j && j.assets) || [])[0] ? ((j.assets || [])[0].size || 0) : 0,
+          }));
+      }
+      const u = VER_MIRRORS[i++];
+      return fetch(u + '?t=' + Date.now(), { cache: 'no-store' })
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+        .then((j) => ({
+          tag: 'v' + String(j.version || ''),
+          urls: (j.urls && j.urls.length ? j.urls : (j.apk ? [j.apk] : [])),
+          size: j.size || 0,
+        }))
+        .catch(next);
+    }
+    return next();
+  }
+
   function checkUpdate(manual) {
     if (!window.fetch) return;
-    fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+    fetchVersion()
       .then((j) => {
-        const tag = j && j.tag_name ? j.tag_name : '';
-        const apk = ((j && j.assets) || []).find((a) => /\.apk$/i.test(a.name || ''));
-        if (!tag || !apk) throw new Error('no apk');
+        const tag = j.tag || '';
+        const urls = (j.urls || []).filter(Boolean);
+        if (!tag || !urls.length) throw new Error('no urls');
         if (cmpVersion(tag, APP_VERSION) <= 0) {
           S.update = null;
           save();
@@ -674,7 +705,7 @@
           return;
         }
         const ver = String(tag).replace(/^v/i, '');
-        S.update = { version: ver, url: apk.browser_download_url, size: apk.size };
+        S.update = { version: ver, urls, url: urls[0], size: j.size };
         if (S.seenUpdate === ver) S.seenUpdate = '';
         save();
         render();
@@ -695,7 +726,7 @@
     else right = '<button class="btn primary xs" data-act="update">一键更新</button>';
     const sub = updateState.indexOf('error:') === 0
       ? '更新失败：' + esc(updateState.slice(6))
-      : `新版本 v${esc(u.version)} · 约 ${Math.round((u.size || 0) / 1048576 * 10) / 10} MB`;
+      : `新版本 v${esc(u.version)} · 约 ${Math.round((u.size || 0) / 1048576 * 10) / 10} MB · 国内镜像`;
     return `<section class="update-bar">
         <div class="ub-body">
           <b>有新版本可更新</b>
@@ -709,6 +740,7 @@
   window.__updateStatus = function (status) {
     updateState = String(status || '');
     if (updateState === 'installing') toast('安装包就绪，按提示完成安装');
+    if (updateState.indexOf('mirror') === 0) toast('直链不通，换第 ' + (updateState.split(':')[1] || 1) + ' 个镜像…');
     if (updateState.indexOf('error:') === 0) toast('更新失败：' + updateState.slice(6));
     render();
   };
@@ -2146,11 +2178,19 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       case 'clear-wrong':
         doClearWrong();
         break;
+      case 'update-mirror': {
+        if (S.update && window.App && window.App.installUpdate) {
+          updateState = 'downloading';
+          render();
+          window.App.installUpdate('https://raw.githubusercontent.com/sutranixm-svg/ielts-words/dist/ielts-vocab.apk');
+        }
+        break;
+      }
       case 'update':
         if (S.update && window.App && window.App.installUpdate) {
           updateState = 'downloading';
           render();
-          window.App.installUpdate(S.update.url);
+          window.App.installUpdate((S.update.urls || [S.update.url]).join('\n'));
         } else {
           toast('请在浏览器打开 GitHub 页面下载');
         }
