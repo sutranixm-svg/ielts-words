@@ -103,7 +103,7 @@ public class MainActivity extends Activity {
                 @Override
                 public boolean onError(MediaPlayer mp, int what, int extra) {
                     stopPlayer();
-                    emit("audiofail");
+                    emit("audiofail:asset");
                     return true;
                 }
             });
@@ -111,24 +111,73 @@ public class MainActivity extends Activity {
             player.start();
         } catch (Exception e) {
             stopPlayer();
-            emit("audiofail");
+            emit("audiofail:asset" + e.getClass().getSimpleName());
         }
     }
 
+    /** 直连流播在部分机型上会被拦，改成先落盘再播。 */
     private void playUrl(final String url) {
+        stopPlayer();
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File out = new File(getCacheDir(), "say.mp3");
+                HttpURLConnection conn = null;
+                InputStream in = null;
+                FileOutputStream fos = null;
+                try {
+                    conn = (HttpURLConnection) new URL(url).openConnection();
+                    conn.setConnectTimeout(10000);
+                    conn.setReadTimeout(15000);
+                    conn.setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android)");
+                    conn.setInstanceFollowRedirects(true);
+                    if (conn.getResponseCode() != 200) {
+                        emit("audiofail:net" + conn.getResponseCode());
+                        return;
+                    }
+                    in = conn.getInputStream();
+                    fos = new FileOutputStream(out);
+                    byte[] buf = new byte[16 * 1024];
+                    int n;
+                    long total = 0;
+                    while ((n = in.read(buf)) > 0) {
+                        fos.write(buf, 0, n);
+                        total += n;
+                        if (total > 2 * 1024 * 1024) break;
+                    }
+                    fos.flush();
+                    fos.close();
+                    fos = null;
+                    if (out.length() < 500) {
+                        emit("audiofail:empty");
+                        return;
+                    }
+                    final File f = out;
+                    runOnUiThread(new Runnable() {
+                        @Override
+                        public void run() {
+                            playLocal(f);
+                        }
+                    });
+                } catch (Exception e) {
+                    emit("audiofail:net" + e.getClass().getSimpleName());
+                } finally {
+                    try { if (fos != null) fos.close(); } catch (Exception ignored) { }
+                    try { if (in != null) in.close(); } catch (Exception ignored) { }
+                    if (conn != null) conn.disconnect();
+                }
+            }
+        }).start();
+    }
+
+    private void playLocal(File f) {
         stopPlayer();
         try {
             player = new MediaPlayer();
             player.setAudioAttributes(new AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build());
-            player.setDataSource(url);
-            player.setOnPreparedListener(new MediaPlayer.OnPreparedListener() {
-                @Override
-                public void onPrepared(MediaPlayer mp) {
-                    mp.start();
-                }
-            });
+            player.setDataSource(f.getAbsolutePath());
             player.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
                 @Override
                 public void onCompletion(MediaPlayer mp) {
@@ -139,14 +188,15 @@ public class MainActivity extends Activity {
                 @Override
                 public boolean onError(MediaPlayer mp, int what, int extra) {
                     stopPlayer();
-                    emit("audiofail");
+                    emit("audiofail:decode" + what);
                     return true;
                 }
             });
-            player.prepareAsync();
+            player.prepare();
+            player.start();
         } catch (Exception e) {
             stopPlayer();
-            emit("audiofail");
+            emit("audiofail:decode" + e.getClass().getSimpleName());
         }
     }
 
@@ -258,7 +308,7 @@ public class MainActivity extends Activity {
         @JavascriptInterface
         public void speakText(String text) {
             if (!ttsReady || text == null) {
-                emit("audiofail");
+                emit("audiofail:tts");
                 return;
             }
             tts.speak(text, TextToSpeech.QUEUE_FLUSH, null);

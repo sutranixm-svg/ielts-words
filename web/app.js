@@ -740,14 +740,21 @@
   window.__updateStatus = function (status) {
     updateState = String(status || '');
     if (updateState === 'installing') toast('安装包就绪，按提示完成安装');
-    if (updateState === 'audiofail') {
-      // 原生播放失败：先退回系统语音，再失败就明确告诉用户
+    if (updateState.indexOf('audiofail') === 0) {
+      const why = updateState.split(':')[1] || '';
+      lastAudioErr = why || 'unknown';
+      render();
+      if (why.indexOf('tts') === 0) {
+        toast('系统语音不可用，去设置里打开「联网补全」');
+        return;
+      }
+      // 录音/联网都失败 → 退回系统语音；再失败就把原因说清楚
       if (!audioFailed) {
         audioFailed = true;
         if (window.App && window.App.speakText) window.App.speakText(lastSay);
         else speak(lastSay);
       } else {
-        toast('这个词发音放不出来，换个词试试');
+        toast('发音失败（' + why + '）');
       }
       return;
     }
@@ -767,6 +774,7 @@
   /** 读单词：优先内置真人录音，其次联网音频（可选），最后系统语音。 */
   let lastSay = '';
   let audioFailed = false;
+  let lastAudioErr = '';
 
   function say(word) {
     lastSay = String(word || '');
@@ -1850,6 +1858,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       <p class="small muted">学完当天配额后，首页还能点「加练」继续学新词，不受配额限制。调整当天即时生效。</p>
       <button class="btn danger" data-act="ask-reset">重置学习进度</button>
       <button class="btn ghost" data-act="back">返回</button>
+      ${lastAudioErr ? `<p class="small muted center">上次发音错误：${esc(lastAudioErr)}</p>` : ''}
       <button class="btn ghost" data-act="check-update">检查更新</button>
       <p class="small muted center">${WORDS.length} 词 · ${TOPICS.length} 个主题 · v${esc(APP_VERSION)}</p>
     </div>`;
