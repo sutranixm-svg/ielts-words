@@ -18,10 +18,11 @@
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
   const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
   // 更新检查优先走国内可达的镜像，最后才回落到 GitHub API
+  // gh-proxy 会把 version.json 也缓存住，所以清单优先用会刷新的源
   const VER_MIRRORS = [
-    'https://gh-proxy.com/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
     'https://ghfast.top/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
-    'https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://gcore.jsdelivr.net/gh/' + REPO + '@dist/version.json',
+    'https://gh-proxy.com/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
   ];
   const NEWS_TTL = 6 * 3600 * 1000;
   const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
