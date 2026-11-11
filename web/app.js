@@ -70,7 +70,7 @@
       v: 1,
       words: {},
       days: {},
-      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', decks: TOPICS.map((t) => t.id) },
+      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', onlineAudio: false, decks: TOPICS.map((t) => t.id) },
       session: null,
       quiz: null,
       lastSession: null,
@@ -716,6 +716,37 @@
   /* ---------- 语音朗读 ---------- */
 
   let ttsReady = false;
+
+  function audioFile(word) {
+    return 'audio/' + String(word).toLowerCase().replace(/[^a-z0-9_-]/g, '_') + '.mp3';
+  }
+
+  /** 读单词：有内置真人音频就播，否则按设置联网取，再不行退系统 TTS。 */
+  function say(word) {
+    const w = WORD_MAP.get(word);
+    const player = new Audio();
+    let settled = false;
+    function fallback(fromAudio) {
+      if (settled) return;
+      settled = true;
+      if (fromAudio && S.settings.onlineAudio) {
+        const net = new Audio('https://dict.youdao.com/dictvoice?audio=' + encodeURIComponent(word) + '&type=2');
+        net.onerror = function () { speak(word); };
+        net.play().catch(function () { speak(word); });
+        return;
+      }
+      speak(word);
+    }
+    player.onerror = function () { fallback(true); };
+    player.onended = function () { settled = true; };
+    if (w && w.a) {
+      player.src = audioFile(word);
+      const pr = player.play();
+      if (pr && pr.catch) pr.catch(function () { fallback(true); });
+    } else {
+      fallback(true);
+    }
+  }
 
   function speak(text, rate) {
     try {
@@ -1749,6 +1780,12 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         <input id="examDate" type="date" value="${esc(S.settings.examDate || '')}">
         ${S.settings.examDate ? '<button class="icon-btn sm" data-act="clear-exam" aria-label="清除">×</button>' : ''}
       </div>
+      <h3>真人发音</h3>
+      <div class="seg">
+        <button class="seg-item ${S.settings.onlineAudio ? '' : 'active'}" data-act="set-audio:0">仅离线</button>
+        <button class="seg-item ${S.settings.onlineAudio ? 'active' : ''}" data-act="set-audio:1">联网补全</button>
+      </div>
+      <p class="small muted">720 个精编词自带真人录音，离线可听。其余 8500+ 词若开启「联网补全」，会从公开发音接口取音频；关掉就用系统语音合成。</p>
       <h3>每天新词</h3>
       ${stepper('new', S.settings.dailyNew, 5, 200, 5, '个新词 / 天')}
       ${seg('new', [5, 10, 15, 20, 30], S.settings.dailyNew, '')}
@@ -1879,7 +1916,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     document.getElementById('tabbar').innerHTML = focus ? '' : tabbarHTML();
     if (S.quiz && !S.quiz.done && !S.quiz.answered) {
       const it = S.quiz.items[S.quiz.pos];
-      if (it && it.kind === 'listen') speak(it.w);
+      if (it && it.kind === 'listen') say(it.w);
     }
     tickMock();
     save();
@@ -2043,8 +2080,13 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       case 'rec-play':
         playRecord();
         break;
+      case 'set-audio':
+        S.settings.onlineAudio = arg === '1';
+        save();
+        render();
+        break;
       case 'say':
-        speak(parts.slice(1).join(':'));
+        say(parts.slice(1).join(':'));
         break;
       case 'mock-start':
         startMock();

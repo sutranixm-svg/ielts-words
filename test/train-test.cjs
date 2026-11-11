@@ -27,6 +27,13 @@ const dom = new JSDOM(html, {
       addEventListener: () => {},
     };
     window.SpeechSynthesisUtterance = function (t) { this.text = t; };
+    window.__played = [];
+    window.Audio = function () {
+      const self = this;
+      this.src = '';
+      this.play = function () { window.__played.push(self.src); return Promise.resolve(); };
+      this.pause = function () {};
+    };
     window.addEventListener('error', (e) => errors.push(e.message));
   },
 });
@@ -54,10 +61,15 @@ setTimeout(() => {
     /* ---------- 发音 ---------- */
     click('[data-act="tab:today"]');
     click('[data-act^="start"]');
-    const sayBtn = doc.querySelector('.flash .say');
-    assert(Boolean(sayBtn), '单词卡有发音按钮');
-    sayBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    assert(spoken.length === 1 && spoken[0].length > 1, '点击后调用了语音引擎：' + spoken[0]);
+    assert(Boolean(doc.querySelector('.flash .say')), '单词卡有发音按钮');
+    // 内置音频词：直接构造一个 say 动作，走的是委托监听器
+    doc.body.insertAdjacentHTML('beforeend', '<button id="tsay" data-act="say:academic">t</button>');
+    doc.getElementById('tsay').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    assert(window.__played[0] === 'audio/academic.mp3', '有真人录音时优先播本地文件：' + window.__played[0]);
+    // 没有内置音频的词：退回系统 TTS
+    doc.body.insertAdjacentHTML('beforeend', '<button id="tsay2" data-act="say:zzzzz">t</button>');
+    doc.getElementById('tsay2').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    assert(spoken.length === 1 && spoken[0] === 'zzzzz', '没有录音时退回语音合成：' + spoken[0]);
     click('[data-act="pause"]');
     S().session = null;
 
