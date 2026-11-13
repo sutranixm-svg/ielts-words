@@ -108,7 +108,7 @@ CLASS_LIST="$(find "$OUT/classes" -name '*.class' | sort)"
 
 if [ -n "$D8" ]; then
   # shellcheck disable=SC2086
-  if ! "$D8" --min-api 23 --output "$OUT/dex" $CLASS_LIST; then
+  if ! "$D8" --min-api 23 --lib "$SDK_JAR" --output "$OUT/dex" $CLASS_LIST; then
     # shellcheck disable=SC2086
     "$D8" --output "$OUT/dex" $CLASS_LIST
   fi

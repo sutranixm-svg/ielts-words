@@ -64,9 +64,11 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     let t = boot();
     await sleep(4000); // 等启动后的自动拉取（3.5s）
     let view = text(t.doc);
-    assert(t.doc.querySelectorAll('.tab').length === 5, '底部有 5 个标签');
-    assert(t.doc.getElementById('tabbar').textContent.includes('外刊'), '存在外刊标签');
+    assert(t.doc.querySelectorAll('.tab').length === 4, '底部有 4 个标签');
+    assert(t.doc.getElementById('tabbar').textContent.includes('首页'), '首页在标签栏');
+    assert(!t.doc.getElementById('tabbar').textContent.includes('外刊'), '外刊不占底部标签');
 
+    click(t.window, '[data-act="tab:study"]');
     click(t.window, '[data-act="tab:news"]');
     view = text(t.doc);
     assert(view.includes('外刊精读'), '进入外刊列表');
@@ -101,6 +103,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 6. 失败降级
     const t2 = boot({ fail: true });
     await sleep(500);
+    click(t2.window, '[data-act="tab:study"]');
     click(t2.window, '[data-act="tab:news"]');
     await sleep(500);
     assert(text(t2.doc).includes('还没有数据'), '拉取失败时给出空状态');
@@ -110,6 +113,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     const t3 = boot();
     await sleep(4000);
     const before = t3.doc.querySelectorAll('.ncard').length;
+    click(t3.window, '[data-act="tab:study"]');
     click(t3.window, '[data-act="tab:news"]');
     assert(before === 0 && t3.doc.querySelectorAll('.ncard').length === shown.length, '切换标签时按需拉取并渲染');
 

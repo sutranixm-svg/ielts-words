@@ -140,7 +140,6 @@ setTimeout(() => {
 
     /* ---------- 模考 + Band ---------- */
     click('[data-act="quiz:again"]');
-    click('[data-act="tab:quiz"]');
     assert(text().includes('模拟考'), '测验页有模拟考入口');
     click('[data-act="mock-start"]');
     assert(S().quiz.mock === true && S().quiz.items.length === 20, '模拟考 20 题');

@@ -460,10 +460,11 @@
     }
     const d = S.days[day] || { new: 0, review: 0, right: 0, wrong: 0 };
     const week = [];
-    for (let i = 6; i >= 0; i -= 1) {
-      const dd = addDays(day, -i);
-      const r = S.days[dd];
-      week.push({ day: dd, label: shortDay(dd), value: activityOf(r) });
+    const weekNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const mondayOffset = (parseDay(day).getDay() + 6) % 7;
+    for (let i = 0; i < 7; i += 1) {
+      const dd = addDays(day, -mondayOffset + i);
+      week.push({ day: dd, label: weekNames[i], value: activityOf(S.days[dd]) });
     }
     const wrong = [];
     for (const w of WORDS) {
@@ -528,7 +529,11 @@
     const newRoom = Math.max(0, S.settings.dailyNew - todayNew);
     const cap = mode === 'extra' ? Math.max(10, S.settings.dailyNew || 15) : Math.min(newRoom, goalLeft);
     const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen)
-      .sort((a, b) => pathRank(a) - pathRank(b) || a.w.localeCompare(b.w));
+      .sort((a, b) => {
+        const pa = S.words[a.w] && S.words[a.w].pinned ? 0 : 1;
+        const pb = S.words[b.w] && S.words[b.w].pinned ? 0 : 1;
+        return pa - pb || pathRank(a) - pathRank(b) || a.w.localeCompare(b.w);
+      });
     const newPicked = unseen.slice(0, cap);
 
     if (mode === 'review') return { queue: due.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: due.length };
@@ -841,7 +846,9 @@
 
   const ICONS = {
     today: '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5.5h-5V21H5a1 1 0 0 1-1-1z"/>',
-    study: '<rect x="3.5" y="6" width="12" height="15" rx="2.5"/><path d="M8 3.5h9A2.5 2.5 0 0 1 19.5 6v12"/>',
+    study: '<path d="M5 4.5h8A3.5 3.5 0 0 1 16.5 8v12H8.5A3.5 3.5 0 0 1 5 16.5z"/><path d="M5 16.5A3.5 3.5 0 0 1 8.5 13h8"/>',
+    review: '<path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v4h-4"/>',
+    me: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 19.2a6.5 6.5 0 0 1 13 0"/>',
     quiz: '<circle cx="12" cy="12" r="8.5"/><path d="m8.4 12 2.3 2.3 5-5.4"/>',
     library: '<path d="M5 4.5h8A3.5 3.5 0 0 1 16.5 8v12H8.5A3.5 3.5 0 0 1 5 16.5z"/><path d="M5 16.5A3.5 3.5 0 0 1 8.5 13h8"/>',
     play: '<path d="M8 5.5 18 12 8 18.5z"/>',
@@ -914,14 +921,15 @@
 
   function tabbarHTML() {
     let active = S.ui.tab;
-    if (S.ui.screen === 'settings' || S.ui.screen === 'wrong') active = 'library';
-    if (S.ui.screen === 'decks' || (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0)) active = 'library';
+    if (S.ui.screen === 'settings' || S.ui.screen === 'weak') active = 'me';
+    if (S.ui.screen === 'wrong' || S.ui.screen === 'decks') active = 'review';
+    if (S.ui.tab === 'library' || S.ui.tab === 'news' || S.ui.tab === 'quiz') active = 'study';
+    if (S.ui.tab === 'me' || S.ui.screen === 'settings') active = 'me';
     const tabs = [
-      ['today', '今天'],
+      ['today', '首页'],
       ['study', '学习'],
-      ['quiz', '测验'],
-      ['news', '外刊'],
-      ['library', '词库'],
+      ['review', '复习'],
+      ['me', '我的'],
     ];
     return `<div class="tabbar-inner">${tabs
       .map(
@@ -1392,47 +1400,121 @@
           <button class="btn primary xs" data-act="apply-plan">每天 ${plan.perDay} 个</button>
         </section>`
       : `<button class="exam-empty" data-act="open:settings">设置考试日期，自动算每天该背多少 ›</button>`;
+    const hello = greeting();
+    const books = bookCards();
     return `<div class="screen">
       ${updateBanner()}
+      <section class="greet">
+        <img class="logo-img" src="avatar.png" alt="">
+        <div class="greet-copy">
+          <h1>${esc(hello)}</h1>
+          <div class="muted small">${dateLabel()}</div>
+        </div>
+        <button class="bell" data-act="tab:review" aria-label="复习提醒">${st.due ? '<i></i>' : ''}${svg('review')}</button>
+      </section>
       ${planBar}
-      <section class="coach">
-        <img class="coach-ava" src="avatar.png" alt="鲸娘">
-        <div class="coach-body">
-          <div class="coach-date">${dateLabel()}</div>
-          <div class="coach-say">${bubble}</div>
-        </div>
-      </section>
-
-      <section class="hero">
-        <div class="ring">${ringSVG(pct, 'today')}<div class="center"><b>${pct >= 1 ? '✓' : done}</b><small>${pct >= 1 ? '达标' : '今日已学'}</small></div></div>
-        <div class="hero-info">
+      <section class="today-card">
+        <div>
+          <div class="eyebrow">今日学习</div>
+          <div class="ring">${ringSVG(pct, 'today')}<div class="center"><b>${done}</b><small> / ${goal}</small></div></div>
           <div class="eyebrow">今日目标</div>
-          <div class="hero-num">${done}<span> / ${goal} 张</span></div>
-          <div class="hero-sub">${pct >= 1 ? '目标完成，状态不错' : tip}</div>
-          <div class="pill">🔥 连续 ${st.streak} 天</div>
+        </div>
+        <div class="today-side">
+          <div class="side-row"><span class="side-ico">🔥</span><div><b>连续 ${st.streak} 天</b><div class="muted small">${pct >= 1 ? '今天达标了' : '再接再厉'}</div></div></div>
+          <div class="side-row"><span class="side-ico">↻</span><div><b>待复习 ${st.due}</b><div class="muted small">个单词${st.backlog ? ' · 积压 ' + st.backlog : ''}</div></div></div>
         </div>
       </section>
-
-      <div class="chips">
-        <div class="chip"><b>${st.due}</b><span>待复习</span></div>
-        <div class="chip"><b>${done}</b><span>今日已学</span></div>
-        <div class="chip"><b>${st.mastered}</b><span>已掌握</span></div>
-      </div>
-
-      <button class="btn primary" data-act="start"><span class="ico">${svg('play')}</span>${label}</button>
+      <p class="small muted">${esc(tip)}</p>
+      <button class="btn primary" data-act="start">${label} ›</button>
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <button class="btn ghost sm scope" data-act="open:decks">
-        <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${WORDS.filter((w) => activeDecks().indexOf(w.t) >= 0).length} 词</b>
+        <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${deckWords().length} 词</b>
       </button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:quiz">快速测验</button>
         <button class="btn ghost sm" data-act="open:wrong">错词本 ${st.wrong.length}</button>
       </div>
-
+      <div class="row">
+        <h3>词汇书</h3>
+        <button class="linkbtn" data-act="tab:library">全部 ›</button>
+      </div>
+      <div class="books">${books}</div>
       <section class="card">
-        <div class="card-head"><span>最近 7 天</span><span>共 ${st.week.reduce((a, b) => a + b.value, 0)} 词</span></div>
+        <div class="card-head"><span>本周学习</span><span>累计学习 ${st.week.reduce((a, b) => a + b.value, 0)} 个单词</span></div>
         <div class="chart">${week}</div>
       </section>
+    </div>`;
+  }
+
+  function greeting() {
+    const h = new Date().getHours();
+    const hello = h < 5 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+    const name = String(S.settings.nickname || '').trim();
+    return name ? hello + '，' + name : hello;
+  }
+
+  function bookCards() {
+    const groups = [
+      { id: 'curated', zh: '精编 720', ids: ['education', 'environment', 'health', 'society', 'technology', 'work'], color: 'linear-gradient(160deg,#5b4bdb,#7c8cff)' },
+      { id: 'ielts', zh: '雅思词表', ids: ['ielts'], color: 'linear-gradient(160deg,#2457d6,#4fd1c5)' },
+      { id: 'toefl', zh: '托福词表', ids: ['toefl'], color: 'linear-gradient(160deg,#0f766e,#34d399)' },
+    ];
+    return groups.map((g) => {
+      const words = WORDS.filter((w) => g.ids.indexOf(w.t) >= 0);
+      const mastered = words.filter((w) => S.words[w.w] && S.words[w.w].box >= MASTER_BOX).length;
+      const pct = words.length ? Math.round((mastered / words.length) * 100) : 0;
+      const on = g.ids.some((id) => activeDecks().indexOf(id) >= 0);
+      return `<button class="book" style="background:${g.color}" data-act="words:${g.ids[0]}">
+        <div><b>${esc(g.zh)}</b><div><span>${on ? '在学' : '未选'} · ${words.length} 词</span></div></div>
+        <div>进度 ${pct}%<div class="book-bar"><i style="width:${pct}%"></i></div></div>
+      </button>`;
+    }).join('');
+  }
+
+  function reviewScreen() {
+    const st = stats();
+    const max = Math.max(1, ...st.week.map((d) => d.value));
+    const pts = st.week.map((d, i) => {
+      const x = 16 + (i * 268) / 6;
+      const y = 120 - (d.value / max) * 90;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    const dueWords = deckWords().filter((w) => {
+      const r = S.words[w.w];
+      return r && r.seen && r.due <= today();
+    }).slice(0, 8);
+    const level = (w) => {
+      const r = ensureFsrs(S.words[w.w]);
+      const ret = window.FSRS ? window.FSRS.retrievability(Math.max(0, dayNum(today()) - dayNum(r.lastReview || r.last || today())), r.stability || 1) : 0.5;
+      if (ret >= 0.8) return '高';
+      if (ret >= 0.5) return '中';
+      return '低';
+    };
+    return `<div class="screen">
+      <h1>复习</h1>
+      <p class="muted">今天有 <b style="color:var(--accent2)">${st.due}</b> 个词到期${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}</p>
+      <section class="card">
+        <div class="card-head"><span>记忆曲线</span><span>本周</span></div>
+        <svg class="curve" viewBox="0 0 300 140" aria-hidden="true">
+          <polyline fill="none" stroke="url(#cg)" stroke-width="3" points="${pts}"/>
+          <defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7C8CFF"/><stop offset="1" stop-color="#4FD1C5"/></linearGradient></defs>
+        </svg>
+        <div class="chart" style="height:auto">${st.week.map((d) => `<div class="col"><div class="d">${d.label}</div></div>`).join('')}</div>
+      </section>
+      <div class="chips">
+        <div class="chip"><b>${st.mastered}</b><span>已掌握</span></div>
+        <div class="chip"><b>${Math.max(0, st.seen - st.mastered)}</b><span>学习中</span></div>
+        <div class="chip"><b>${st.wrong.length}</b><span>易错</span></div>
+      </div>
+      <section class="card">
+        <div class="card-head"><span>待复习词汇</span><span>共 ${st.due} 个</span></div>
+        <div class="list">${dueWords.map((w) => `<div class="list-item"><div><div class="lw">${esc(w.w)}</div><div class="lz">${esc(w.zh)}</div></div><div class="lt">${level(w)}</div></div>`).join('') || '<p class="small muted">今天没有到期的词</p>'}</div>
+      </section>
+      <button class="btn primary" data-act="start:review">开始复习</button>
+      <div class="row2">
+        <button class="btn ghost sm" data-act="open:weak">本周薄弱</button>
+        <button class="btn ghost sm" data-act="tab:quiz">去做测验</button>
+      </div>
     </div>`;
   }
 
@@ -1457,24 +1539,26 @@
       : `<div class="hint">先回忆一下，再点开对照</div>`;
     return `<div class="screen">
       <div class="study-head">
-        <button class="icon-btn" data-act="pause" aria-label="暂停">←</button>
         <div class="bar-track"><i style="width:${pct}%"></i></div>
         <div class="count">${s.pos + 1}/${s.queue.length}</div>
       </div>
 
+      <div class="stack">
       <section class="flash ${revealed ? '' : 'tappable'}" ${revealed ? '' : 'data-act="reveal"'}>
         <span class="badge ${isNew ? 'new' : 'rev'}">${isNew ? '新词' : '复习'}${topic ? ' · ' + esc(topic.zh) : ''}</span>
         <div class="word">${esc(w.w)}<button class="say" data-act="say:${esc(w.w)}" aria-label="朗读">🔊</button></div>
         ${w.ipa ? `<div class="ipa">${esc(w.ipa)}</div>` : ''}
         ${body}
       </section>
+      </div>
+      <p class="small muted center">左右滑动也可以选择</p>
 
       ${
         revealed
           ? `<div class="grades">
-               <button class="grade bad" data-act="grade:again"><b>不认识</b><span>今天再练</span></button>
-               <button class="grade warn" data-act="grade:hard"><b>模糊</b><span>明天复习</span></button>
-               <button class="grade good" data-act="grade:good"><b>认识</b><span>拉长间隔</span></button>
+               <button class="grade rate bad" data-act="grade:again"><b>忘记</b><span>×</span></button>
+               <button class="grade rate warn" data-act="grade:hard"><b>模糊</b><span>?</span></button>
+               <button class="grade rate good" data-act="grade:good"><b>认识</b><span>✓</span></button>
              </div>
              <button class="linkbtn" data-act="grade:easy">太简单了</button>
              <button class="linkbtn" data-act="end">结束本组</button>`
@@ -1497,6 +1581,10 @@
       ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.due} 个</button>` : ''}
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <button class="btn ghost sm" data-act="open:weak">本周薄弱</button>
+      <div class="row2">
+        <button class="btn ghost sm" data-act="tab:library">词库</button>
+        <button class="btn ghost sm" data-act="tab:news">外刊精读</button>
+      </div>
       <h3>四项训练</h3>
       ${trainGrid()}
       <p class="small muted center">记录保存在本机，不会上传。</p>
@@ -1647,8 +1735,9 @@
       <button class="btn primary" data-act="quiz:again">再来一组</button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:today">回今天</button>
-        <button class="btn ghost sm" data-act="open:wrong">错词本</button>
+        <button class="btn ghost sm" data-act="tab:library">词库</button>
       </div>
+      <button class="btn ghost sm" data-act="open:wrong">错词本</button>
     </div>`;
   }
 
@@ -2149,6 +2238,7 @@
     const t = String(text || '').trim();
     const words = t.match(/[A-Za-z][A-Za-z'-]*/g) || [];
     const wc = words.length;
+    const zhCount = (t.match(/[\u4e00-\u9fff]/g) || []).length;
     const sents = t.split(/[.!?]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x.split(/\s+/).length > 2; });
     const avg = sents.length ? Math.round(wc / sents.length) : 0;
     const paras = t.split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 20; }).length;
@@ -2167,6 +2257,8 @@
     const out = [];
     out.push({ lv: wc >= 250 ? 'pass' : wc >= 180 ? 'warn' : 'bad', t: '词数 ' + wc,
       d: wc >= 250 ? '达到 250 词要求' : 'Task 2 要求至少 250 词，还差 ' + (250 - wc) + ' 词' });
+    out.push({ lv: 'pass', t: '汉字 ' + zhCount,
+      d: zhCount ? '另有中文 ' + zhCount + ' 字，不计入上面的英文词数' : '没有检测到中文' });
     out.push({ lv: paras >= 4 && paras <= 6 ? 'pass' : 'warn', t: '段落 ' + (paras || 1),
       d: paras >= 4 && paras <= 6 ? '结构完整' : '建议 4–5 段：引言 1 段、两个主体段、结论 1 段' });
     out.push({ lv: used.length >= 5 ? 'pass' : used.length >= 3 ? 'warn' : 'bad', t: '连接词 ' + used.length + ' 种',
@@ -2267,13 +2359,60 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     </div>`;
   }
 
+  function linkifyPassage(paragraph) {
+    return String(paragraph).split(/([A-Za-z][A-Za-z'-]*)/g).map((tok) => {
+      if (/^[A-Za-z]/.test(tok)) {
+        return `<button type="button" class="lookup" data-act="lookup:${esc(tok.toLowerCase())}">${esc(tok)}</button>`;
+      }
+      return esc(tok);
+    }).join('');
+  }
+
+  function lookupSheet() {
+    if (!S.lookup) return '';
+    const w = WORD_MAP.get(S.lookup);
+    if (!w) {
+      return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(S.lookup)}</h3><p>词库里没有这个词。</p><button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
+    }
+    return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(w.w)}</h3><p>${esc(w.pos)} ${esc(w.zh)}</p>${w.ipa ? `<p>${esc(w.ipa)}</p>` : ''}<button class="btn primary" data-act="add-word:${esc(w.w)}">加入今日学习</button><button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
+  }
+
+  function addWord(w) {
+    const word = WORD_MAP.get(w);
+    if (!word) {
+      toast('词库里没有这个词');
+      return;
+    }
+    const rec = ensureRec(word.w);
+    if (!rec.seen) {
+      rec.due = today();
+      rec.pinned = true;
+    }
+    S.lookup = '';
+    save();
+    render();
+    toast('已加入今日学习：' + word.w);
+  }
+
+  function onboardHTML() {
+    if (S.settings.onboarded) return '';
+    const step = S.onboardStep || 0;
+    if (step === 0) {
+      return `<div class="onboard"><div class="eyebrow">第一次打开</div><h2>先把顺序定好</h2><p class="small muted">默认先学精编 720，再进入雅思词表。带录音的词可以离线听；没有录音时，联网发音来自有道词典，也可以改成手机自己的语音。</p><button class="btn primary" data-act="onboard:1">继续</button></div>`;
+    }
+    if (step === 1) {
+      return `<div class="onboard"><h2>每天学多少</h2><p class="small muted">现在是每天 ${S.settings.dailyNew} 个新词，复习上限 ${S.settings.dailyReview || 40} 个。这些都能在「我的」里改。</p><button class="btn primary" data-act="onboard:2">继续</button></div>`;
+    }
+    return `<div class="onboard"><h2>选一个外观</h2><div class="row2"><button class="btn ghost" data-act="theme:dark">深色</button><button class="btn ghost" data-act="theme:light">浅色</button></div><button class="btn primary" data-act="onboard:done">开始使用</button></div>`;
+  }
+
   function passageScreen(i) {
     const p = PASSAGES[i];
     if (!p) return readingScreen();
     return `<div class="screen">
       <span class="ncat">PASSAGE ${i + 1}</span>
       <h1 class="dtitle small">${esc(p.title)}</h1>
-      <article class="passage">${p.text.split(/\n\s*\n/).map(function (par) { return '<p>' + esc(par) + '</p>'; }).join('')}</article>
+      <article class="passage selectable">${p.text.split(/\n\s*\n/).map(function (par) { return '<p>' + linkifyPassage(par) + '</p>'; }).join('')}</article>
       ${p.qs.map(function (q, qi) {
         const key = i + ':' + qi;
         const picked = readPick[key];
@@ -2347,12 +2486,19 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         <input id="examDate" type="date" value="${esc(S.settings.examDate || '')}">
         ${S.settings.examDate ? '<button class="icon-btn sm" data-act="clear-exam" aria-label="清除">×</button>' : ''}
       </div>
+      <h3>怎么称呼你</h3>
+      <div class="date-row"><input id="nick" type="text" maxlength="16" placeholder="显示在首页问候里" value="${esc(S.settings.nickname || '')}"></div>
+      <h3>主题</h3>
+      <div class="seg">
+        <button class="seg-item ${S.settings.theme === 'light' ? '' : 'active'}" data-act="theme:dark">深色</button>
+        <button class="seg-item ${S.settings.theme === 'light' ? 'active' : ''}" data-act="theme:light">浅色</button>
+      </div>
       <h3>真人发音</h3>
       <div class="seg">
         <button class="seg-item ${S.settings.onlineAudio ? '' : 'active'}" data-act="set-audio:0">仅离线</button>
         <button class="seg-item ${S.settings.onlineAudio ? 'active' : ''}" data-act="set-audio:1">联网补全</button>
       </div>
-      <p class="small muted">720 个精编词自带真人录音，离线可听。其余 8500+ 词若开启「联网补全」，会从公开发音接口取音频；关掉就用系统语音合成。</p>
+      <p class="small muted">720 个精编词自带真人录音，离线可听。其余词如果打开「联网补全」，发音来自有道词典的公开接口，需要联网；关掉之后用手机自己的语音合成，声音和是否可用取决于系统。</p>
       <h3>每天复习上限</h3>
       ${stepper('review', S.settings.dailyReview || 40, 10, 200, 10, '个到期词 / 天')}
       <h3>每天新词</h3>
@@ -2553,6 +2699,8 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       return newsScreen();
     }
     if (S.ui.tab === 'library') return libraryScreen();
+    if (S.ui.tab === 'review') return reviewScreen();
+    if (S.ui.tab === 'me') return settingsScreen();
     return todayScreen();
   }
 
@@ -2580,7 +2728,10 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       (S.ui.tab === 'study' && S.session && !S.session.done) ||
       (S.ui.tab === 'quiz' && S.quiz && !S.quiz.done);
     view.className = 'view' + (focus ? ' no-tabs' : '');
-    view.innerHTML = saveBanner() + screenHTML() + modalHTML();
+    document.documentElement.dataset.theme = S.settings.theme === 'light' ? 'light' : 'dark';
+    const ob = document.getElementById('onboard');
+    if (ob) ob.innerHTML = onboardHTML();
+    view.innerHTML = saveBanner() + screenHTML() + modalHTML() + lookupSheet();
     document.getElementById('tabbar').innerHTML = focus ? '' : tabbarHTML();
     if (S.quiz && !S.quiz.done && !S.quiz.answered) {
       const it = S.quiz.items[S.quiz.pos];
@@ -2614,6 +2765,11 @@ Some caution is warranted. Much of the research uses small samples, and effects 
   }
 
   document.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'nick') {
+      S.settings.nickname = String(e.target.value || '').slice(0, 16);
+      save();
+      return;
+    }
     if (e.target && e.target.id === 'examDate') {
       S.settings.examDate = e.target.value || '';
       save();
@@ -2631,6 +2787,24 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     wordsView.q = e.target.value;
     wordsView.limit = 60;
     renderWordList();
+  });
+
+  let swipe = null;
+  document.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest && e.target.closest('.flash');
+    if (!card || !S.session || S.session.done || !S.session.revealed) return;
+    swipe = { x: e.clientX, y: e.clientY };
+  });
+  document.addEventListener('pointerup', (e) => {
+    if (!swipe) return;
+    const dx = e.clientX - swipe.x;
+    const dy = e.clientY - swipe.y;
+    swipe = null;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches && Math.abs(dx) < 80) return;
+    if (Math.abs(dx) < 56 && Math.abs(dy) < 56) return;
+    if (Math.abs(dy) > Math.abs(dx) && dy < 0) grade('hard');
+    else if (dx > 0) grade('good');
+    else grade('again');
   });
 
   document.addEventListener('click', (e) => {
@@ -2779,6 +2953,30 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         break;
       case 'queue-weak':
         queueWeak();
+        break;
+      case 'theme':
+        S.settings.theme = arg === 'light' ? 'light' : 'dark';
+        save();
+        render();
+        break;
+      case 'onboard':
+        if (arg === 'done') {
+          S.settings.onboarded = true;
+          S.onboardStep = 0;
+        } else S.onboardStep = Number(arg) || 0;
+        save();
+        render();
+        break;
+      case 'lookup':
+        S.lookup = parts.slice(1).join(':');
+        render();
+        break;
+      case 'lookup-close':
+        S.lookup = '';
+        render();
+        break;
+      case 'add-word':
+        addWord(parts.slice(1).join(':'));
         break;
       case 'open':
         S.ui.screen = arg;
