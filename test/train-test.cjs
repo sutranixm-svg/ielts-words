@@ -3,12 +3,8 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-let html = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
-html = html
-  .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-  .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+const { inlineHtml } = require('./inline.js');
+let html = inlineHtml(root);
 
 const spoken = [];
 const errors = [];
@@ -144,7 +140,6 @@ setTimeout(() => {
 
     /* ---------- 模考 + Band ---------- */
     click('[data-act="quiz:again"]');
-    click('[data-act="tab:quiz"]');
     assert(text().includes('模拟考'), '测验页有模拟考入口');
     click('[data-act="mock-start"]');
     assert(S().quiz.mock === true && S().quiz.items.length === 20, '模拟考 20 题');

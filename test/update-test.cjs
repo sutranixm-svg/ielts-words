@@ -3,18 +3,14 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-const html0 = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
+const { inlineHtml } = require('./inline.js');
 
 const ASSET = 'https://github.com/sutranixm-svg/ielts-words/releases/download/v9.9.9/ielts-vocab.apk';
 
 function boot({ version = '1.2.0', tag = 'v9.9.9', withBridge = true } = {}) {
   const calls = [];
   const errors = [];
-  const html = html0
-    .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-    .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+  const html = inlineHtml(root);
   const dom = new JSDOM(html, {
     runScripts: 'dangerously',
     url: 'https://ielts.local/',
@@ -146,6 +142,71 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     assert(t4.window.__ielts.state().update && t4.window.__ielts.state().update.version === '9.9.9',
       'API 返回版本后正确解析');
     t4.window.close();
+
+    // 9) API 更旧、dist 更新：取更高的版本，并按文件名选安装包
+    const pure = boot({ version: '1.0.0', tag: 'v1.0.0' });
+    const picked = pure.window.__ielts.chooseUpdate(
+      {
+        tag_name: 'v1.0.0',
+        assets: [
+          { name: 'notes.txt', browser_download_url: 'https://example.com/notes.txt', size: 10 },
+          { name: 'ielts-vocab-1.0.0.apk', browser_download_url: 'https://github.com/sutranixm-svg/ielts-words/releases/download/v1.0.0/ielts-vocab-1.0.0.apk', size: 11 },
+        ],
+      },
+      {
+        version: '3.2.0',
+        versionCode: 20,
+        size: 222,
+        sha256: 'abc123',
+        urls: ['http://evil.example/ielts-vocab-3.2.0.apk', 'https://cdn.example/ielts-vocab-3.2.0.apk'],
+      }
+    );
+    assert(picked.version === '3.2.0', 'dist 版本更高时采用 dist（' + picked.version + '）');
+    assert(picked.urls.every((u) => u.indexOf('https://') === 0), '候选地址只有 https');
+    assert(picked.urls.some((u) => u.indexOf('ielts-vocab-3.2.0.apk') > 0), '下载地址带版本文件名');
+    assert(!picked.urls.some((u) => u.indexOf('http://') === 0), '丢掉 http 地址');
+
+    const named = pure.window.__ielts.pickAsset([
+      { name: 'wrong.zip', browser_download_url: 'https://example.com/wrong.zip' },
+      { name: 'ielts-vocab-2.0.0.apk', browser_download_url: 'https://example.com/ielts-vocab-2.0.0.apk', digest: 'sha256:deadbeef' },
+    ], '2.0.0');
+    assert(named && named.name === 'ielts-vocab-2.0.0.apk', '按文件名选择资源，不用 assets[0]');
+    assert(pure.window.__ielts.pickAsset([{ name: 'ielts-vocab.apk', browser_download_url: 'https://example.com/ielts-vocab.apk' }], '2.0.0') === null, '名字对不上时不回退到第一个资源');
+
+    const abc = pure.window.__ielts.sha256('abc');
+    assert(abc === 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad', 'sha256("abc")');
+    assert(pure.window.__ielts.acceptHash('abc', abc) === true, '哈希一致时接受');
+    assert(pure.window.__ielts.acceptHash('abc', '00') === false, '哈希不一致时拒绝');
+    assert(pure.window.__ielts.acceptHash('abc', '') === true, '没有摘要时不因哈希失败');
+    pure.window.close();
+
+    // 10) 超时：两个源都不返回
+    const t5 = boot({ version: '1.0.0', tag: 'v9.9.9' });
+    t5.window.__ielts.setFetchMs(80);
+    t5.window.fetch = (url, opts) => new Promise((resolve, reject) => {
+      const sig = opts && opts.signal;
+      if (sig) sig.addEventListener('abort', () => reject(new Error('aborted')));
+    });
+    click(t5.window, '[data-act="tab:library"]');
+    click(t5.window, '[data-act="open:settings"]');
+    click(t5.window, '[data-act="check-update"]');
+    await sleep(500);
+    assert(t5.window.document.getElementById('toast').textContent.indexOf('检查更新失败') >= 0, '超时后提示检查失败');
+    assert(!t5.window.__ielts.state().update, '超时不会写成有更新');
+    t5.window.close();
+
+    // 11) 稍后再说之后，同版本再检查仍然不打扰
+    const t6 = boot({ version: '1.0.0', tag: 'v9.9.9' });
+    await sleep(1900);
+    click(t6.window, '[data-act="update-later"]');
+    click(t6.window, '[data-act="tab:library"]');
+    click(t6.window, '[data-act="open:settings"]');
+    click(t6.window, '[data-act="check-update"]');
+    await sleep(400);
+    click(t6.window, '[data-act="tab:today"]');
+    assert(!text(t6.window).includes('有新版本可更新'), '稍后再说会记住，同版本不再弹出');
+    assert(t6.window.__ielts.state().seenUpdate === '9.9.9', 'seenUpdate 保持为 9.9.9');
+    t6.window.close();
 
     console.log('\nUPDATE TEST PASS');
     process.exit(0);

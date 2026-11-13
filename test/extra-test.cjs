@@ -3,12 +3,8 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-let html = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
-html = html
-  .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-  .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+const { inlineHtml } = require('./inline.js');
+let html = inlineHtml(root);
 
 const rec = { started: 0, stopped: 0, playing: [] };
 const errors = [];

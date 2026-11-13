@@ -1,80 +1,80 @@
-# 雅思单词 · IELTS Words
+# 雅思单词
 
-雅思 + 托福词汇卡片应用，共 **9277 词**。除检查更新外全部离线运行。
+离线为主的雅思 / 托福词汇应用，词库 **9277**。Android 端是 WebView 外壳，界面在 `web/`。
 
-Android 端是一个 WebView 外壳 + 本地网页（`web/` 目录）。申请三个权限：`INTERNET`（检查更新）、`REQUEST_INSTALL_PACKAGES`（一键更新）、`RECORD_AUDIO`（口语练习录音，只在点录音时请求）；学习数据不上传，全部存在本机。
+当前版本 **1.9.4**（`versionCode` 16，`targetSdk` 35）。除检查更新、外刊和可选的联网发音外，学习过程不上传。
 
 ## 功能
 
-- **发音**：720 个精编词自带真人录音（离线可听）；其余词可选「联网补全」或退回系统语音合成
-- **四项训练**：口语 Part 2 话题卡 + 计时 + 录音回放、写作 Task 2 话题库 + 句型 + 草稿 + 自查、阅读原创模拟题、同义替换练习
-- **模拟考**：20 题 / 15 分钟，交卷给词汇正确率和 Band 粗估
-- **备考计划**：设置考试日期，自动算每天该背多少，一键应用
-- **词库**：9277 词，8 个板块
-  - 自建精编 720 词：教育、环境、健康、社会、科技、工作（每个词带例句）
-  - 其余词条配英文释义（ECDICT definition），没有例句时在卡片上显示
-  - 雅思词表 4651 词、托福词表 3906 词（音标 + 中文释义）
-- **单词卡**：英文、IPA 音标、词性、中文释义、例句
-- **学习**：按到期时间生成队列，三档评分（认识 / 模糊 / 不认识）驱动间隔重复
-- **学习量可调**：每天新词 5–200，用 −/+ 逐档调；学完配额还能「加练」继续学后面的词
-- **错词按艾宾浩斯复习**：1/2/4/7/15/30/60 天间隔，答对推一档、答错回第 1 天；每次最多 20 个，轮流过一遍不重复
-- **测验**：拼写填空，干扰项从同话题词里生成
-- **今天**：当日学习记录 + 进度环
-- **学习范围**：8 个词库可任意勾选，只学选中的；词表不受勾选影响，随时可查
-- **词表浏览**：任一词库点进去按字母序浏览，支持英文 / 中文搜索、分页加载
-- **音频**：`web/audio/` 下 720 个 MP3（32kbps 单声道，共 4.6 MB），来源为公开发音接口，非商用
-- **外刊精读**：每天 07:00 自动抓 10 篇最新英文报道（科技 / 财经 / 生活 / 文娱），中英对照，点「读原文」跳浏览器
-- **更新**：启动时自动检查 GitHub Release，发现新版本在首页弹出提示条，点「一键更新」直接下载并拉起安装器
+- **首页**：今日目标、连续天数、待复习、词汇书和本周柱状图。
+- **学习**：新词先走精编 720，再按雅思词表往下排。也可以自己勾选词库。
+- **复习**：FSRS 安排下次出现的时间。忘记 / 模糊 / 认识（还可以标「太简单了」）写进同一条记忆记录，测验和错词本也用它。
+- **练习**：四选一还在。另外可以听写、看中文拼单词、在例句里填空。
+- **本周薄弱**：错误分成拼写、词义、再认。同一词一周里错到两次，会自动排进今天。
+- **听说读写**：口语话题卡、写作草稿和自查（中英文字数分开计）、阅读模拟和点词查义。
+- **外刊**：拉取中英对照摘要，数独和填字不会进列表。
+- **我的**：每天新词、复习上限、主题、导出 / 导入 JSON、最近 7 天本地备份。
 
-四个标签页：`今天` / `学习` / `测验` / `词库`。
+底部四个标签：首页、学习、复习、我的。
+
+## 发音
+
+720 个精编词带离线 mp3。没有录音的词可以打开「联网补全」，音频来自有道词典的公开接口；关掉就用系统语音合成。打包时这些 mp3 保持不压缩。
 
 ## 安装
 
-从 [Releases](../../releases) 下载 APK，安装时允许「未知来源」即可。要求 Android 6.0（API 23）以上。
+从 [Releases](../../releases) 下载 `ielts-vocab-<版本>.apk`。Android 6.0 及以上。安装器需要「安装未知应用」权限。
 
 ## 构建
 
-需要 JDK + Android SDK（`aapt`、`dx`、`zipalign`、`apksigner`）。
+发布步骤、需要的 GitHub secrets 和证书指纹写在 [RELEASE.md](RELEASE.md)。`build.sh` **不会**自动生成 keystore，口令只从环境变量读，不会出现在命令行参数里。
+
+本机只想确认能编过：
 
 ```bash
-cp .env.example .env     # 填入 KS_PASS（签名口令）
-bash build.sh            # 产出 build/ielts-vocab.apk
+export ANDROID_SDK_ROOT=...   # 需要 platforms 和 build-tools，优先用 d8
+export JAVA_HOME=...
+SIGN=0 bash build.sh          # build/ielts-vocab-<versionName>.apk，未签名
 ```
 
-签名口令只从环境变量或 `.env` 读取，**不入库**。`build/`、`.keystore/`、`.env` 都已在 `.gitignore` 中排除。
+要签成可以安装的包，自己提供 `KEYSTORE`、`KEYSTORE_PASSWORD`、`KEY_ALIAS`、`KEY_PASSWORD`。不要把密钥或 `.env` 提交进仓库。
+
+## 数据
+
+学习记录存在本机 `localStorage` 的 `ielts.vocab.v2`。旧的 `ielts.vocab.v1` 会在打开时迁过来。系统的 `allowBackup` 是关的，避免整包备份把进度带走；换机用应用里的 JSON 导出。
 
 ## 目录
 
 ```
-android/      AndroidManifest + MainActivity（WebView 外壳）
-web/          应用本体：index.html / app.js / style.css / words.js
-avatar/       角色形象素材
-test/         UI 冒烟测试（Node）
-build.sh      手工打包脚本
+android/      Manifest、WebView 外壳、更新下载
+web/          界面、词库、FSRS、离线发音
+data/         外刊摘要
+tools/        词库整理、外刊采集
+test/         界面和算法测试（Node）
+.github/      打 tag 发布、每日外刊
 ```
 
-## 外刊精读
+## 测试
 
-`tools/collect_articles.py` 抓取多个媒体的公开 RSS，按分类均衡挑 10 条（科技 / 财经 / 生活 / 文娱），
-翻译标题和摘要，写入 `data/articles.json`，App 从 `raw.githubusercontent.com` 拉取并缓存 6 小时。
+```bash
+npm install --prefix test
+node test/ui-test.cjs
+node test/study-test.cjs
+node test/deck-test.cjs
+node test/update-test.cjs
+node test/storage-test.cjs
+node test/fsrs-test.cjs
+node test/learn-test.cjs
+node test/news-test.cjs
+node test/train-test.cjs
+node test/extra-test.cjs
+```
 
-- **只保存标题 + 摘要 + 链接 + 署名**，不转载全文；正文请点「读原文」到发布方站点阅读
-- 翻译走公开翻译端点，失败时保留英文，不会报错中断
-- 目前由本机每天 07:00 的定时任务生成并推送（GitHub Actions 版本在 `tools/ci-daily.yml`，
-  需要给 token 加 `workflow` 权限才能启用）
+## 词库说明
 
-## 更新机制
+雅思 / 托福词表来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT），按标签筛选。精编 720 的释义和例句是这个项目写的。缺音标、缺例句的清单在 [CONTENT_GAPS.md](CONTENT_GAPS.md)，脚本没有编造补齐。
 
-启动 1.5 秒后请求 `https://api.github.com/repos/sutranixm-svg/ielts-words/releases/latest`，
-与 `versionName` 比较；有新版本时首页顶部出现提示条，点「一键更新」由原生代码下载 APK
-到缓存目录，再通过 `content://` 交给系统安装器（Android 8+ 需允许「安装未知应用」）。
-
-## 说明
-
-- 雅思/托福词表数据来自 [ECDICT](https://github.com/skywind3000/ECDICT)（MIT 协议），按 `ielts` / `toefl` 标签筛选，音标与释义经过程序化整理。
-- 720 个精编词的释义与例句为本项目撰写。
-- 「雅思 / IELTS」是 British Council、IDP、Cambridge Assessment 的注册商标。本应用与上述机构无关联，也未获其授权；如要上架应用商店，建议改用不含该商标的应用名。
-- 当前未在任何应用商店发布，`versionName 1.1` / `versionCode 2`，`targetSdk 33`。上架 Google Play 需 targetSdk 36 且交付 AAB；国内商店需软著与 APP 备案。
+「雅思 / IELTS」是 British Council、IDP、Cambridge Assessment 的注册商标。本应用与这些机构无关。
 
 ## License
 

@@ -3,32 +3,58 @@
 (function () {
   const WORDS = window.WORDS || [];
   const TOPICS = window.TOPICS || [];
+  const EXTRA = window.LEXICON_EXTRA || {};
+  WORDS.forEach((w, i) => {
+    w._i = i;
+    const x = EXTRA[w.w] || EXTRA[String(w.w).toLowerCase()];
+    if (!x) return;
+    if (!w.ipa && x.ipa) w.ipa = x.ipa;
+    if (x.col && x.col.length) w.col = x.col;
+    if (x.conf && x.conf.length) w.conf = x.conf;
+  });
   const WORD_MAP = new Map(WORDS.map((w) => [w.w, w]));
   const TOPIC_MAP = new Map(TOPICS.map((t) => [t.id, t]));
-  const KEY = 'ielts.vocab.v1';
+  const KEY_V1 = 'ielts.vocab.v1';
+  const KEY = 'ielts.vocab.v2';
+  const BACKUP_KEY = 'ielts.vocab.backups';
+  const SCHEMA = 2;
   const INTERVALS = [1, 2, 4, 8, 16, 32];
   const MASTER_BOX = 4;
   const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  const KINDS = ['zh', 'en', 'spell', 'listen'];
-  // 艾宾浩斯复习间隔（天）：错词按这个节奏往后推
-  const EBB = [1, 2, 4, 7, 15, 30, 60];
+  const KINDS = ['zh', 'en', 'spell', 'listen', 'type-en', 'type-listen', 'cloze'];
+  const BOOK_RANK = { education: 0, environment: 1, health: 2, society: 3, technology: 4, work: 5, ielts: 6, toefl: 7 };
   const WRONG_BATCH = 20;
   const REPO = 'sutranixm-svg/ielts-words';
   const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
   const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
-  // 更新检查优先走国内可达的镜像，最后才回落到 GitHub API
+  const NEWS_URLS = [
+    NEWS_URL,
+    'https://ghfast.top/' + NEWS_URL,
+    'https://cdn.jsdelivr.net/gh/' + REPO + '@main/data/articles.json',
+    'https://gcore.jsdelivr.net/gh/' + REPO + '@main/data/articles.json',
+  ];
+  const JUNK_RE = /sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword/i;
+  // 版本清单和安装包都只走 https。文件名按版本号拼，不使用 assets[0]。
   /** 按版本号拼出各镜像上的安装包地址。 */
   function mirrorUrls(ver) {
     if (!ver) return [];
     const f = 'ielts-vocab-' + ver + '.apk';
-    const gh = 'https://github.com/sutranixm-svg/ielts-words/raw/dist/' + f;
+    const release = 'https://github.com/' + REPO + '/releases/download/v' + ver + '/' + f;
+    const gh = 'https://github.com/' + REPO + '/raw/dist/' + f;
     return [
+      release,
+      'https://ghfast.top/' + release,
       'https://ghfast.top/' + gh,
-      'https://gh-proxy.com/' + gh,
-      'https://gcore.jsdelivr.net/gh/sutranixm-svg/ielts-words@dist/' + f,
+      'https://gcore.jsdelivr.net/gh/' + REPO + '@dist/' + f,
     ];
   }
+  const DIST_URLS = [
+    'https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://ghfast.top/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://cdn.jsdelivr.net/gh/' + REPO + '@dist/version.json',
+    'https://gcore.jsdelivr.net/gh/' + REPO + '@dist/version.json',
+  ];
   const NEWS_TTL = 6 * 3600 * 1000;
   const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
 
@@ -79,10 +105,20 @@
 
   function fresh() {
     return {
-      v: 1,
+      schema: SCHEMA,
       words: {},
       days: {},
-      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', onlineAudio: true, decks: TOPICS.map((t) => t.id) },
+      settings: {
+        dailyNew: 15,
+        dailyGoal: 20,
+        dailyReview: 40,
+        examDate: '',
+        onlineAudio: true,
+        decks: defaultDeckIds(),
+        theme: 'dark',
+        nickname: '',
+        onboarded: false,
+      },
       session: null,
       quiz: null,
       lastSession: null,
@@ -94,36 +130,143 @@
     };
   }
 
-  function normalize(raw) {
+  function migrate(raw) {
     const base = fresh();
     const o = raw && typeof raw === 'object' ? raw : {};
+    const settings = { ...base.settings, ...(o.settings || {}) };
+    if (!Array.isArray(settings.decks)) settings.decks = base.settings.decks;
     return {
       ...base,
       ...o,
-      v: 1,
+      schema: SCHEMA,
       words: o.words && typeof o.words === 'object' ? o.words : {},
       days: o.days && typeof o.days === 'object' ? o.days : {},
-      settings: { ...base.settings, ...(o.settings || {}) },
+      settings,
       news: o.news && Array.isArray(o.news.items) ? o.news : base.news,
-      ui: { ...base.ui, ...(o.ui || {}) },
+      writing: o.writing && typeof o.writing === 'object' ? o.writing : {},
+      ui: { ...base.ui, ...(o.ui || {}), confirm: null },
     };
   }
 
+  function readStore(key) {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }
+
+  let loadError = '';
+  let saveError = '';
+  let saveWarned = false;
+
   let S = (function load() {
     try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) return normalize(JSON.parse(raw));
-    } catch (e) {}
+      const v2 = readStore(KEY);
+      if (v2) return migrate(v2);
+    } catch (e) {
+      loadError = '当前进度读不出来（' + ((e && e.message) || e) + '）';
+    }
+    try {
+      const v1 = readStore(KEY_V1);
+      if (v1) {
+        if (loadError) loadError = '已改用上一份进度。' + loadError;
+        return migrate(v1);
+      }
+    } catch (e) {
+      loadError = loadError || ('旧进度读不出来（' + ((e && e.message) || e) + '）');
+    }
     return fresh();
   })();
 
   // 跨天时丢弃旧的学习队列，避免第二天接着昨天的卡
   if (S.session && S.session.day && S.session.day !== dayStr()) S.session = null;
+  Object.keys(S.words).forEach((w) => ensureFsrs(S.words[w]));
 
   function save() {
     try {
       localStorage.setItem(KEY, JSON.stringify(S));
-    } catch (e) {}
+      saveError = '';
+      saveWarned = false;
+      return true;
+    } catch (e) {
+      saveError = (e && e.message) ? e.message : '无法写入本地存储';
+      if (!saveWarned) {
+        saveWarned = true;
+        toast('保存失败：' + saveError);
+      }
+      return false;
+    }
+  }
+
+  function readBackups() {
+    try {
+      const list = JSON.parse(localStorage.getItem(BACKUP_KEY) || '[]');
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function exportable(state) {
+    const copy = JSON.parse(JSON.stringify(state || S));
+    delete copy.ui;
+    delete copy.session;
+    delete copy.quiz;
+    return copy;
+  }
+
+  function exportPayload() {
+    return JSON.stringify({
+      app: 'ielts-words',
+      schema: SCHEMA,
+      exported: new Date().toISOString(),
+      state: exportable(S),
+    });
+  }
+
+  function snapshotToday(force) {
+    const day = today();
+    let list = readBackups();
+    const idx = list.findIndex((b) => b && b.day === day);
+    if (idx >= 0 && !force) return;
+    const entry = { day, at: new Date().toISOString(), state: exportable(S) };
+    if (idx >= 0) list.splice(idx, 1);
+    list.unshift(entry);
+    list = list.slice(0, 7);
+    try {
+      localStorage.setItem(BACKUP_KEY, JSON.stringify(list));
+    } catch (e) {
+      saveError = '备份失败：' + ((e && e.message) || e);
+      if (!saveWarned) {
+        saveWarned = true;
+        toast(saveError);
+      }
+    }
+  }
+
+  function importState(obj) {
+    const state = obj && obj.state && typeof obj.state === 'object' ? obj.state : obj;
+    if (!state || typeof state !== 'object' || !state.words || typeof state.words !== 'object') {
+      throw new Error('不是有效的备份文件');
+    }
+    snapshotToday(true);
+    S = migrate(state);
+    if (S.session && S.session.day && S.session.day !== dayStr()) S.session = null;
+    save();
+    render();
+  }
+
+  function restoreBackup(day) {
+    const list = readBackups();
+    const hit = list.find((b) => b && b.day === day);
+    if (!hit || !hit.state) {
+      toast('找不到这份备份');
+      return;
+    }
+    S = migrate(hit.state);
+    if (S.session && S.session.day && S.session.day !== dayStr()) S.session = null;
+    save();
+    render();
+    toast('已恢复 ' + day + ' 的备份');
   }
 
   function today() {
@@ -133,32 +276,115 @@
     if (!S.days[day]) S.days[day] = { new: 0, review: 0, right: 0, wrong: 0 };
     return S.days[day];
   }
+  function defaultDeckIds() {
+    const curated = ['education', 'environment', 'health', 'society', 'technology', 'work'];
+    return curated.filter((id) => TOPIC_MAP.has(id)).concat(TOPIC_MAP.has('ielts') ? ['ielts'] : []);
+  }
+
+  function pathRank(w) {
+    const book = BOOK_RANK[w.t] == null ? 9 : BOOK_RANK[w.t];
+    const len = w.t === 'ielts' || w.t === 'toefl' ? String(w.w).length : 0;
+    return book * 100000 + len * 1000 + (w._i || 0);
+  }
+
+  function stabilityToBox(s) {
+    if (s >= 32) return 5;
+    if (s >= 16) return 4;
+    if (s >= 8) return 3;
+    if (s >= 4) return 2;
+    if (s >= 1) return 1;
+    return 0;
+  }
+
+  function ratingOf(grade) {
+    if (grade === 'again') return 1;
+    if (grade === 'hard') return 2;
+    if (grade === 'easy') return 4;
+    return 3;
+  }
+
+  function ensureFsrs(rec) {
+    if (!rec) return rec;
+    rec.err = rec.err || { spell: 0, meaning: 0, recognition: 0 };
+    if (!rec.due) rec.due = today();
+    if (rec.wdue && rec.due && rec.wdue < rec.due) rec.due = rec.wdue;
+    rec.wdue = rec.wdue || rec.due;
+    if (typeof rec.stability === 'number' && rec.stability > 0) return rec;
+    const box = rec.box || 0;
+    rec.stability = rec.seen ? (box <= 0 ? 1 : [1, 2, 4, 8, 16, 32][Math.min(5, box)] || 1) : 0;
+    rec.difficulty = typeof rec.difficulty === 'number' ? rec.difficulty : 5;
+    rec.reps = rec.reps || rec.seen || 0;
+    rec.lapses = rec.lapses || rec.wrong || 0;
+    rec.state = !rec.seen ? 'new' : (rec.stability >= 16 ? 'review' : 'learning');
+    return rec;
+  }
+
   function ensureRec(w) {
     if (!S.words[w]) {
-      S.words[w] = { box: 0, due: today(), seen: 0, right: 0, wrong: 0, first: today(), last: null,
-                     wstep: 0, wdue: today(), wlast: null };
+      S.words[w] = {
+        box: 0, due: today(), seen: 0, right: 0, wrong: 0, first: today(), last: null,
+        wstep: 0, wdue: today(), wlast: null,
+        stability: 0, difficulty: 5, reps: 0, lapses: 0, state: 'new',
+        err: { spell: 0, meaning: 0, recognition: 0 },
+      };
     }
-    return S.words[w];
+    return ensureFsrs(S.words[w]);
   }
+
   function applyGrade(rec, grade, day = today()) {
-    const first = rec.seen === 0;
-    rec.seen += 1;
+    ensureFsrs(rec);
+    const first = !rec.seen;
+    let elapsed = 0;
+    const prev = rec.lastReview || rec.last;
+    if (prev) elapsed = Math.max(0, dayNum(day) - dayNum(prev));
+    if (elapsed === 0 && rec.reps && rec.due && rec.due <= day) elapsed = 1;
+    const nxt = (window.FSRS || FSRS).next(rec, ratingOf(grade), elapsed);
+    rec.stability = nxt.stability;
+    rec.difficulty = nxt.difficulty;
+    rec.reps = nxt.reps;
+    rec.lapses = nxt.lapses;
+    rec.state = nxt.state;
+    rec.scheduledDays = nxt.scheduledDays;
+    rec.due = addDays(day, nxt.scheduledDays);
+    rec.wdue = rec.due;
+    rec.box = stabilityToBox(rec.stability);
     rec.last = day;
-    if (grade === 'good') {
-      rec.right += 1;
-      rec.box = Math.min(5, (rec.box || 0) + 1);
-      rec.due = addDays(day, INTERVALS[rec.box]);
-    } else if (grade === 'hard') {
-      rec.box = Math.max(1, rec.box || 0);
-      rec.due = addDays(day, 1);
+    rec.lastReview = day;
+    rec.wlast = day;
+    rec.seen = (rec.seen || 0) + 1;
+    if (grade === 'again') {
+      rec.wrong = (rec.wrong || 0) + 1;
+      rec.wstep = 0;
     } else {
-      rec.wrong += 1;
-      rec.box = 0;
-      rec.due = addDays(day, 1);
-      markWrong(rec, day);
+      if (grade === 'good' || grade === 'easy') rec.right = (rec.right || 0) + 1;
+      rec.wstep = Math.min(6, (rec.wstep || 0) + 1);
     }
     if (first) rec.first = day;
     return rec;
+  }
+
+  function noteError(word, kind) {
+    const rec = S.words[word];
+    if (rec) {
+      rec.err = rec.err || { spell: 0, meaning: 0, recognition: 0 };
+      if (rec.err[kind] == null) rec.err[kind] = 0;
+      rec.err[kind] += 1;
+    }
+    S.errorLog = Array.isArray(S.errorLog) ? S.errorLog : [];
+    S.errorLog.push({ day: today(), w: word, kind: kind });
+    if (S.errorLog.length > 500) S.errorLog = S.errorLog.slice(-500);
+    const from = addDays(today(), -6);
+    const n = S.errorLog.filter((e) => e.w === word && e.day >= from).length;
+    if (n >= 2 && rec) {
+      rec.due = today();
+      rec.wdue = today();
+      rec.weak = true;
+    }
+  }
+
+  function activityOf(r) {
+    if (!r) return 0;
+    return (r.new || 0) + (r.review || 0) + (r.quiz || 0);
   }
 
   /* ---------- 词库选择 ---------- */
@@ -234,10 +460,11 @@
     }
     const d = S.days[day] || { new: 0, review: 0, right: 0, wrong: 0 };
     const week = [];
-    for (let i = 6; i >= 0; i -= 1) {
-      const dd = addDays(day, -i);
-      const r = S.days[dd];
-      week.push({ day: dd, label: shortDay(dd), value: r ? (r.new || 0) + (r.review || 0) : 0 });
+    const weekNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+    const mondayOffset = (parseDay(day).getDay() + 6) % 7;
+    for (let i = 0; i < 7; i += 1) {
+      const dd = addDays(day, -mondayOffset + i);
+      week.push({ day: dd, label: weekNames[i], value: activityOf(S.days[dd]) });
     }
     const wrong = [];
     for (const w of WORDS) {
@@ -261,7 +488,8 @@
     }
     const total = deckWords().length;
     return {
-      today: { new: d.new || 0, review: d.review || 0, total: (d.new || 0) + (d.review || 0) },
+      today: { new: d.new || 0, review: d.review || 0, quiz: d.quiz || 0, total: activityOf(d) },
+      backlog: Math.max(0, due - Math.min(due, Math.max(5, Math.min(200, S.settings.dailyReview || 40)))),
       newLeft: Math.max(0, S.settings.dailyNew - (d.new || 0)),
       due,
       seen,
@@ -277,8 +505,7 @@
   }
 
   function studiedOn(day) {
-    const r = S.days[day];
-    return Boolean(r && (r.new || 0) + (r.review || 0) > 0);
+    return activityOf(S.days[day]) > 0;
   }
 
   /* ---------- 学习队列 ---------- */
@@ -296,12 +523,18 @@
         const rb = S.words[b.w];
         return ra.due.localeCompare(rb.due) || (ra.box || 0) - (rb.box || 0);
       })
-      .slice(0, 40);
+      .slice(0, Math.max(5, Math.min(200, S.settings.dailyReview || 40)));
     const todayNew = (S.days[day] && S.days[day].new) || 0;
-    const cap = Math.max(0, S.settings.dailyNew - todayNew);
-    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen);
-    const extraSize = Math.max(10, S.settings.dailyNew || 15);
-    const newPicked = shuffle(unseen, rnd).slice(0, mode === 'extra' ? extraSize : cap);
+    const goalLeft = Math.max(0, (S.settings.dailyGoal || 0) - activityOf(S.days[day]));
+    const newRoom = Math.max(0, S.settings.dailyNew - todayNew);
+    const cap = mode === 'extra' ? Math.max(10, S.settings.dailyNew || 15) : Math.min(newRoom, goalLeft);
+    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen)
+      .sort((a, b) => {
+        const pa = S.words[a.w] && S.words[a.w].pinned ? 0 : 1;
+        const pb = S.words[b.w] && S.words[b.w].pinned ? 0 : 1;
+        return pa - pb || pathRank(a) - pathRank(b) || a.w.localeCompare(b.w);
+      });
+    const newPicked = unseen.slice(0, cap);
 
     if (mode === 'review') return { queue: due.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: due.length };
     if (mode === 'new' || mode === 'extra') return { queue: newPicked.map((w) => ({ w: w.w, kind: 'new' })), newCount: newPicked.length, reviewCount: 0 };
@@ -339,7 +572,7 @@
       pos: 0,
       revealed: false,
       done: false,
-      results: { good: 0, hard: 0, again: 0 },
+      results: { good: 0, hard: 0, again: 0, easy: 0 },
       newCount: built.newCount,
       reviewCount: built.reviewCount,
       requeued: {},
@@ -361,8 +594,11 @@
     const d = dayRec();
     if (first) d.new += 1;
     else d.review += 1;
-    if (g === 'good') d.right += 1;
-    if (g === 'again') d.wrong += 1;
+    if (g === 'good' || g === 'easy') d.right += 1;
+    if (g === 'again') {
+      d.wrong += 1;
+      noteError(item.w, 'recognition');
+    } else if (g === 'hard') noteError(item.w, 'meaning');
     s.results[g] += 1;
     if (g === 'again') {
       const n = s.requeued[item.w] || 0;
@@ -438,6 +674,24 @@
       const opts = shuffle([word.w, ...others.map((w) => w.w)]);
       return { w: word.w, kind, prompt: `${word.pos} ${word.zh}`, hint: '选出对应的英文单词', options: opts, answer: opts.indexOf(word.w), chosen: null, correct: null };
     }
+    if (kind === 'type-en' || kind === 'type-listen' || kind === 'cloze') {
+      let prompt = word.zh;
+      let hint = '输入英文单词，忽略大小写和首尾空格';
+      if (kind === 'type-listen') {
+        prompt = '';
+        hint = '听发音，把单词打出来';
+      }
+      if (kind === 'cloze') {
+        const re = new RegExp('\\b' + String(word.w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+        if (!word.ex || !re.test(word.ex)) return null;
+        prompt = word.ex.replace(re, '______');
+        hint = '根据句子填入单词';
+      }
+      return {
+        w: word.w, kind, prompt, hint, options: [], answer: 0, chosen: null, correct: null,
+        typed: true, expect: word.w,
+      };
+    }
     const spell = spellDistractors(word.w, safePool);
     const opts = shuffle([word.w, ...spell]);
     return {
@@ -493,9 +747,12 @@
       }
     } else {
       pool = seen.length >= 10 ? seen : all;
+      if (kind === 'cloze') {
+        pool = pool.filter((w) => w.ex && new RegExp('\\b' + w.w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(w.ex));
+      }
       picked = sample(pool, Math.min(10, pool.length));
       if (picked.length < 4) {
-        toast('词库太小，先学几个词吧');
+        toast(kind === 'cloze' ? '带例句的词不够，先学一组精编词' : '词库太小，先学几个词吧');
         return;
       }
     }
@@ -505,7 +762,7 @@
       if (kind === 'wrong' || kind === 'wrong-all') k = i % 3 === 2 ? 'spell' : (i % 2 === 0 ? 'zh' : 'en');
       if (!KINDS.includes(k)) k = 'zh';
       return makeItem(w, k, pool);
-    });
+    }).filter(Boolean);
     S.quiz = { kind, items, pos: 0, answered: false, score: 0, done: false };
     S.ui.tab = 'quiz';
     S.ui.screen = null;
@@ -513,39 +770,64 @@
     render();
   }
 
+  function normAnswer(s) {
+    return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[’‘]/g, "'");
+  }
+
+  function errorKindOf(kind) {
+    if (kind === 'spell' || kind === 'type-en' || kind === 'type-listen' || kind === 'cloze') return 'spell';
+    if (kind === 'listen') return 'recognition';
+    return 'meaning';
+  }
+
+  function spellDiff(typed, expect) {
+    const a = normAnswer(typed);
+    const b = normAnswer(expect);
+    let out = '';
+    const n = Math.max(a.length, b.length);
+    for (let i = 0; i < n; i += 1) out += a[i] && a[i] === b[i] ? a[i] : '·';
+    return out;
+  }
+
+  function settleQuizItem(item) {
+    const q = S.quiz;
+    if (q.kind === 'syn') return;
+    const d = dayRec();
+    d.quiz = (d.quiz || 0) + 1;
+    if (item.correct) d.right += 1;
+    else d.wrong += 1;
+    const rec = S.words[item.w];
+    if (!rec || !rec.seen) return;
+    applyGrade(rec, item.correct ? 'good' : 'again');
+    if (!item.correct) noteError(item.w, errorKindOf(item.kind));
+  }
+
   function answerQuiz(i) {
     const q = S.quiz;
     if (!q || q.done || q.answered) return;
     const item = q.items[q.pos];
+    if (item.typed) return;
     item.chosen = i;
     item.correct = i === item.answer;
     q.answered = true;
     if (item.correct) q.score += 1;
-    const rec = S.words[item.w];
-    if (q.kind === 'syn') {
-      save();
-      render();
-      return;
-    }
-    if (rec && rec.seen) {
-      if (q.kind === 'wrong' || q.kind === 'wrong-all') {
-        const day = today();
-        if (item.correct) {
-          rec.right = (rec.right || 0) + 1;
-          rec.box = Math.min(5, (rec.box || 0) + 1);
-          rec.due = addDays(day, INTERVALS[rec.box]);
-          markWrongPassed(rec, day);
-        } else {
-          rec.wrong = (rec.wrong || 0) + 1;
-          rec.box = 0;
-          rec.due = addDays(day, 1);
-          markWrong(rec, day);
-        }
-        rec.last = day;
-      } else {
-        applyGrade(rec, item.correct ? 'good' : 'again');
-      }
-    }
+    settleQuizItem(item);
+    save();
+    render();
+  }
+
+  function answerTyped() {
+    const q = S.quiz;
+    if (!q || q.done || q.answered) return;
+    const item = q.items[q.pos];
+    const input = document.getElementById('typed');
+    const value = input ? input.value : '';
+    item.typedValue = value;
+    item.correct = normAnswer(value) === normAnswer(item.expect || item.w);
+    item.chosen = item.correct ? 0 : -1;
+    q.answered = true;
+    if (item.correct) q.score += 1;
+    settleQuizItem(item);
     save();
     render();
   }
@@ -564,7 +846,9 @@
 
   const ICONS = {
     today: '<path d="M4 10.5 12 4l8 6.5V20a1 1 0 0 1-1 1h-4.5v-5.5h-5V21H5a1 1 0 0 1-1-1z"/>',
-    study: '<rect x="3.5" y="6" width="12" height="15" rx="2.5"/><path d="M8 3.5h9A2.5 2.5 0 0 1 19.5 6v12"/>',
+    study: '<path d="M5 4.5h8A3.5 3.5 0 0 1 16.5 8v12H8.5A3.5 3.5 0 0 1 5 16.5z"/><path d="M5 16.5A3.5 3.5 0 0 1 8.5 13h8"/>',
+    review: '<path d="M20 12a8 8 0 1 1-2.2-5.5"/><path d="M20 4v4h-4"/>',
+    me: '<circle cx="12" cy="8" r="3.2"/><path d="M5.5 19.2a6.5 6.5 0 0 1 13 0"/>',
     quiz: '<circle cx="12" cy="12" r="8.5"/><path d="m8.4 12 2.3 2.3 5-5.4"/>',
     library: '<path d="M5 4.5h8A3.5 3.5 0 0 1 16.5 8v12H8.5A3.5 3.5 0 0 1 5 16.5z"/><path d="M5 16.5A3.5 3.5 0 0 1 8.5 13h8"/>',
     play: '<path d="M8 5.5 18 12 8 18.5z"/>',
@@ -637,14 +921,15 @@
 
   function tabbarHTML() {
     let active = S.ui.tab;
-    if (S.ui.screen === 'settings' || S.ui.screen === 'wrong') active = 'library';
-    if (S.ui.screen === 'decks' || (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0)) active = 'library';
+    if (S.ui.screen === 'settings' || S.ui.screen === 'weak') active = 'me';
+    if (S.ui.screen === 'wrong' || S.ui.screen === 'decks') active = 'review';
+    if (S.ui.tab === 'library' || S.ui.tab === 'news' || S.ui.tab === 'quiz') active = 'study';
+    if (S.ui.tab === 'me' || S.ui.screen === 'settings') active = 'me';
     const tabs = [
-      ['today', '今天'],
+      ['today', '首页'],
       ['study', '学习'],
-      ['quiz', '测验'],
-      ['news', '外刊'],
-      ['library', '词库'],
+      ['review', '复习'],
+      ['me', '我的'],
     ];
     return `<div class="tabbar-inner">${tabs
       .map(
@@ -670,47 +955,224 @@
     return 0;
   }
 
-  /** 版本号只信 GitHub API（它不缓存），下载地址按版本号拼到镜像上。 */
-  function fetchVersion() {
-    return fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-      .then((j) => {
-        const tag = j && j.tag_name ? j.tag_name : '';
-        const ver = String(tag).replace(/^v/i, '');
-        const urls = mirrorUrls(ver);
-        if (j && j.assets && j.assets.length) urls.push(j.assets[0].browser_download_url);
-        return { tag, size: ((j && j.assets) || [{}])[0].size || 0, urls };
-      })
-      .catch(function () {
-        // API 不通时退回可变清单（可能滞后，只作兜底）
-        return fetch('https://ghfast.top/https://raw.githubusercontent.com/' + REPO
-          + '/dist/version.json?t=' + Date.now(), { cache: 'no-store' })
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-          .then((j) => ({
-            tag: 'v' + String(j.version || ''),
-            size: j.size || 0,
-            urls: (j.urls || []).slice(),
-          }));
+  let FETCH_MS = 5000;
+
+  function fetchTimeout(url, ms, opts) {
+    const AC = (typeof AbortController !== 'undefined') ? AbortController : null;
+    const limit = ms || FETCH_MS;
+    if (!AC) {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('timeout')), limit);
+        fetch(url, opts || {}).then((r) => { clearTimeout(t); resolve(r); }, (e) => { clearTimeout(t); reject(e); });
       });
+    }
+    const ctrl = new AC();
+    const timer = setTimeout(() => ctrl.abort(), limit);
+    const opt = Object.assign({ cache: 'no-store' }, opts || {}, { signal: ctrl.signal });
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
+      const ok = (val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(val);
+      };
+      if (ctrl.signal.addEventListener) ctrl.signal.addEventListener('abort', () => fail(new Error('timeout')));
+      fetch(url, opt).then(ok, (e) => fail(ctrl.signal.aborted ? new Error('timeout') : e));
+    });
+  }
+
+  function httpsOnly(list) {
+    const out = [];
+    (list || []).forEach((u) => {
+      if (typeof u === 'string' && u.indexOf('https://') === 0 && out.indexOf(u) < 0) out.push(u);
+    });
+    return out;
+  }
+
+  /** 按文件名挑安装包，不用 assets[0]。对不上名字就当这个 Release 没有包。 */
+  function pickAsset(assets, ver) {
+    const want = 'ielts-vocab-' + ver + '.apk';
+    const list = Array.isArray(assets) ? assets : [];
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].name === want) return list[i];
+    }
+    return null;
+  }
+
+  function sha256Hex(input) {
+    const K = new Uint32Array([
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]);
+    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+    let bytes;
+    if (typeof input === 'string') {
+      const utf = unescape(encodeURIComponent(input));
+      bytes = new Uint8Array(utf.length);
+      for (let i = 0; i < utf.length; i += 1) bytes[i] = utf.charCodeAt(i);
+    } else {
+      bytes = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    }
+    const bitLen = bytes.length * 8;
+    const withPad = new Uint8Array((((bytes.length + 9 + 63) >> 6) << 6));
+    withPad.set(bytes);
+    withPad[bytes.length] = 0x80;
+    const view = new DataView(withPad.buffer);
+    const hi = Math.floor(bitLen / 0x100000000);
+    view.setUint32(withPad.length - 8, hi, false);
+    view.setUint32(withPad.length - 4, bitLen >>> 0, false);
+    let h0 = 0x6a09e667; let h1 = 0xbb67ae85; let h2 = 0x3c6ef372; let h3 = 0xa54ff53a;
+    let h4 = 0x510e527f; let h5 = 0x9b05688c; let h6 = 0x1f83d9ab; let h7 = 0x5be0cd19;
+    const w = new Uint32Array(64);
+    for (let i = 0; i < withPad.length; i += 64) {
+      for (let j = 0; j < 16; j += 1) w[j] = view.getUint32(i + j * 4, false);
+      for (let j = 16; j < 64; j += 1) {
+        const s0 = rotr(w[j - 15], 7) ^ rotr(w[j - 15], 18) ^ (w[j - 15] >>> 3);
+        const s1 = rotr(w[j - 2], 17) ^ rotr(w[j - 2], 19) ^ (w[j - 2] >>> 10);
+        w[j] = (w[j - 16] + s0 + w[j - 7] + s1) >>> 0;
+      }
+      let a = h0; let b = h1; let c = h2; let d = h3; let e = h4; let f = h5; let g = h6; let h = h7;
+      for (let j = 0; j < 64; j += 1) {
+        const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const t1 = (h + S1 + ch + K[j] + w[j]) >>> 0;
+        const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const t2 = (S0 + maj) >>> 0;
+        h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+      h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+    }
+    return [h0, h1, h2, h3, h4, h5, h6, h7].map((x) => x.toString(16).padStart(8, '0')).join('');
+  }
+
+  /** expected 为空时不拦（没有摘要就只能靠 ZIP 魔数和长度）。对不上返回 false。 */
+  function acceptHash(input, expected) {
+    const exp = String(expected || '').replace(/^sha256:/i, '').trim().toLowerCase();
+    if (!exp) return true;
+    return sha256Hex(input) === exp;
+  }
+
+  function shaOf(asset) {
+    const d = asset && (asset.digest || asset.sha256) ? String(asset.digest || asset.sha256) : '';
+    return d.replace(/^sha256:/i, '').trim();
+  }
+
+  function candidateFromApi(j) {
+    if (!j || !j.tag_name) return null;
+    const version = String(j.tag_name).replace(/^v/i, '');
+    if (!version) return null;
+    const asset = pickAsset(j.assets, version);
+    const urls = mirrorUrls(version);
+    if (asset && typeof asset.browser_download_url === 'string' && asset.browser_download_url.indexOf('https://') === 0
+      && urls.indexOf(asset.browser_download_url) < 0) {
+      urls.push(asset.browser_download_url);
+    }
+    return {
+      version,
+      tag: 'v' + version,
+      size: asset && asset.size ? asset.size : 0,
+      sha256: shaOf(asset),
+      urls: httpsOnly(urls),
+      versionCode: 0,
+      source: 'release',
+    };
+  }
+
+  function candidateFromDist(j) {
+    if (!j || !j.version) return null;
+    const version = String(j.version).replace(/^v/i, '');
+    if (!version) return null;
+    const urls = httpsOnly(j.urls).concat(mirrorUrls(version));
+    return {
+      version,
+      tag: 'v' + version,
+      size: j.size || 0,
+      sha256: String(j.sha256 || '').replace(/^sha256:/i, '').trim(),
+      urls: httpsOnly(urls),
+      versionCode: j.versionCode || 0,
+      source: 'dist',
+    };
+  }
+
+  function mergeSame(a, b) {
+    return {
+      version: a.version,
+      tag: a.tag,
+      size: a.size || b.size || 0,
+      sha256: a.sha256 || b.sha256 || '',
+      urls: httpsOnly((a.urls || []).concat(b.urls || [])),
+      versionCode: a.versionCode || b.versionCode || 0,
+      source: (a.sha256 ? a.source : (b.sha256 ? b.source : a.source)),
+    };
+  }
+
+  function betterPair(a, b) {
+    if (!a || !a.version) return b || null;
+    if (!b || !b.version) return a;
+    const c = cmpVersion(a.version, b.version);
+    if (c > 0) return a;
+    if (c < 0) return b;
+    return mergeSame(a, b);
+  }
+
+  function chooseUpdate(apiJson, distJson) {
+    return betterPair(candidateFromApi(apiJson), candidateFromDist(distJson));
+  }
+
+  /** Release 和 dist/version.json 并行拉，取版本更高的那份。单路失败不影响另一路。 */
+  function fetchVersion() {
+    const apiP = fetchTimeout(RELEASES_API, FETCH_MS, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => candidateFromApi(j))
+      .catch(() => null);
+    const distP = Promise.all(DIST_URLS.map((u) => fetchTimeout(u + (u.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), FETCH_MS, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => candidateFromDist(j))
+      .catch(() => null))).then((list) => list.reduce((best, c) => betterPair(best, c), null));
+    return Promise.all([apiP, distP]).then(([api, dist]) => {
+      const chosen = betterPair(api, dist);
+      if (!chosen || !chosen.version || !chosen.urls || !chosen.urls.length) throw new Error('no urls');
+      return chosen;
+    });
   }
 
   function checkUpdate(manual) {
     if (!window.fetch) return;
     fetchVersion()
       .then((j) => {
-        const tag = j.tag || '';
-        const urls = (j.urls || []).filter(Boolean);
-        if (!tag || !urls.length) throw new Error('no urls');
-        if (cmpVersion(tag, APP_VERSION) <= 0) {
+        const ver = j.version;
+        const urls = httpsOnly(j.urls);
+        if (!ver || !urls.length) throw new Error('no urls');
+        if (cmpVersion(ver, APP_VERSION) <= 0) {
           S.update = null;
           save();
           render();
           if (manual) toast('已是最新版本 v' + APP_VERSION);
           return;
         }
-        const ver = String(tag).replace(/^v/i, '');
-        S.update = { version: ver, urls, url: urls[0], size: j.size };
-        if (S.seenUpdate === ver) S.seenUpdate = '';
+        S.update = {
+          version: ver,
+          urls,
+          url: urls[0],
+          size: j.size || 0,
+          sha256: j.sha256 || '',
+          versionCode: j.versionCode || 0,
+        };
         save();
         render();
         if (manual) toast('发现新版本 v' + ver);
@@ -938,47 +1400,121 @@
           <button class="btn primary xs" data-act="apply-plan">每天 ${plan.perDay} 个</button>
         </section>`
       : `<button class="exam-empty" data-act="open:settings">设置考试日期，自动算每天该背多少 ›</button>`;
+    const hello = greeting();
+    const books = bookCards();
     return `<div class="screen">
       ${updateBanner()}
+      <section class="greet">
+        <img class="logo-img" src="avatar.png" alt="">
+        <div class="greet-copy">
+          <h1>${esc(hello)}</h1>
+          <div class="muted small">${dateLabel()}</div>
+        </div>
+        <button class="bell" data-act="tab:review" aria-label="复习提醒">${st.due ? '<i></i>' : ''}${svg('review')}</button>
+      </section>
       ${planBar}
-      <section class="coach">
-        <img class="coach-ava" src="avatar.png" alt="鲸娘">
-        <div class="coach-body">
-          <div class="coach-date">${dateLabel()}</div>
-          <div class="coach-say">${bubble}</div>
-        </div>
-      </section>
-
-      <section class="hero">
-        <div class="ring">${ringSVG(pct, 'today')}<div class="center"><b>${pct >= 1 ? '✓' : done}</b><small>${pct >= 1 ? '达标' : '今日已学'}</small></div></div>
-        <div class="hero-info">
+      <section class="today-card">
+        <div>
+          <div class="eyebrow">今日学习</div>
+          <div class="ring">${ringSVG(pct, 'today')}<div class="center"><b>${done}</b><small> / ${goal}</small></div></div>
           <div class="eyebrow">今日目标</div>
-          <div class="hero-num">${done}<span> / ${goal} 张</span></div>
-          <div class="hero-sub">${pct >= 1 ? '目标完成，状态不错' : tip}</div>
-          <div class="pill">🔥 连续 ${st.streak} 天</div>
+        </div>
+        <div class="today-side">
+          <div class="side-row"><span class="side-ico">🔥</span><div><b>连续 ${st.streak} 天</b><div class="muted small">${pct >= 1 ? '今天达标了' : '再接再厉'}</div></div></div>
+          <div class="side-row"><span class="side-ico">↻</span><div><b>待复习 ${st.due}</b><div class="muted small">个单词${st.backlog ? ' · 积压 ' + st.backlog : ''}</div></div></div>
         </div>
       </section>
-
-      <div class="chips">
-        <div class="chip"><b>${st.due}</b><span>待复习</span></div>
-        <div class="chip"><b>${done}</b><span>今日已学</span></div>
-        <div class="chip"><b>${st.mastered}</b><span>已掌握</span></div>
-      </div>
-
-      <button class="btn primary" data-act="start"><span class="ico">${svg('play')}</span>${label}</button>
+      <p class="small muted">${esc(tip)}</p>
+      <button class="btn primary" data-act="start">${label} ›</button>
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <button class="btn ghost sm scope" data-act="open:decks">
-        <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${WORDS.filter((w) => activeDecks().indexOf(w.t) >= 0).length} 词</b>
+        <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${deckWords().length} 词</b>
       </button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:quiz">快速测验</button>
         <button class="btn ghost sm" data-act="open:wrong">错词本 ${st.wrong.length}</button>
       </div>
-
+      <div class="row">
+        <h3>词汇书</h3>
+        <button class="linkbtn" data-act="tab:library">全部 ›</button>
+      </div>
+      <div class="books">${books}</div>
       <section class="card">
-        <div class="card-head"><span>最近 7 天</span><span>共 ${st.week.reduce((a, b) => a + b.value, 0)} 词</span></div>
+        <div class="card-head"><span>本周学习</span><span>累计学习 ${st.week.reduce((a, b) => a + b.value, 0)} 个单词</span></div>
         <div class="chart">${week}</div>
       </section>
+    </div>`;
+  }
+
+  function greeting() {
+    const h = new Date().getHours();
+    const hello = h < 5 ? '夜深了' : h < 11 ? '早上好' : h < 14 ? '中午好' : h < 18 ? '下午好' : '晚上好';
+    const name = String(S.settings.nickname || '').trim();
+    return name ? hello + '，' + name : hello;
+  }
+
+  function bookCards() {
+    const groups = [
+      { id: 'curated', zh: '精编 720', ids: ['education', 'environment', 'health', 'society', 'technology', 'work'], color: 'linear-gradient(160deg,#5b4bdb,#7c8cff)' },
+      { id: 'ielts', zh: '雅思词表', ids: ['ielts'], color: 'linear-gradient(160deg,#2457d6,#4fd1c5)' },
+      { id: 'toefl', zh: '托福词表', ids: ['toefl'], color: 'linear-gradient(160deg,#0f766e,#34d399)' },
+    ];
+    return groups.map((g) => {
+      const words = WORDS.filter((w) => g.ids.indexOf(w.t) >= 0);
+      const mastered = words.filter((w) => S.words[w.w] && S.words[w.w].box >= MASTER_BOX).length;
+      const pct = words.length ? Math.round((mastered / words.length) * 100) : 0;
+      const on = g.ids.some((id) => activeDecks().indexOf(id) >= 0);
+      return `<button class="book" style="background:${g.color}" data-act="words:${g.ids[0]}">
+        <div><b>${esc(g.zh)}</b><div><span>${on ? '在学' : '未选'} · ${words.length} 词</span></div></div>
+        <div>进度 ${pct}%<div class="book-bar"><i style="width:${pct}%"></i></div></div>
+      </button>`;
+    }).join('');
+  }
+
+  function reviewScreen() {
+    const st = stats();
+    const max = Math.max(1, ...st.week.map((d) => d.value));
+    const pts = st.week.map((d, i) => {
+      const x = 16 + (i * 268) / 6;
+      const y = 120 - (d.value / max) * 90;
+      return x.toFixed(1) + ',' + y.toFixed(1);
+    }).join(' ');
+    const dueWords = deckWords().filter((w) => {
+      const r = S.words[w.w];
+      return r && r.seen && r.due <= today();
+    }).slice(0, 8);
+    const level = (w) => {
+      const r = ensureFsrs(S.words[w.w]);
+      const ret = window.FSRS ? window.FSRS.retrievability(Math.max(0, dayNum(today()) - dayNum(r.lastReview || r.last || today())), r.stability || 1) : 0.5;
+      if (ret >= 0.8) return '高';
+      if (ret >= 0.5) return '中';
+      return '低';
+    };
+    return `<div class="screen">
+      <h1>复习</h1>
+      <p class="muted">今天有 <b style="color:var(--accent2)">${st.due}</b> 个词到期${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}</p>
+      <section class="card">
+        <div class="card-head"><span>记忆曲线</span><span>本周</span></div>
+        <svg class="curve" viewBox="0 0 300 140" aria-hidden="true">
+          <polyline fill="none" stroke="url(#cg)" stroke-width="3" points="${pts}"/>
+          <defs><linearGradient id="cg" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7C8CFF"/><stop offset="1" stop-color="#4FD1C5"/></linearGradient></defs>
+        </svg>
+        <div class="chart" style="height:auto">${st.week.map((d) => `<div class="col"><div class="d">${d.label}</div></div>`).join('')}</div>
+      </section>
+      <div class="chips">
+        <div class="chip"><b>${st.mastered}</b><span>已掌握</span></div>
+        <div class="chip"><b>${Math.max(0, st.seen - st.mastered)}</b><span>学习中</span></div>
+        <div class="chip"><b>${st.wrong.length}</b><span>易错</span></div>
+      </div>
+      <section class="card">
+        <div class="card-head"><span>待复习词汇</span><span>共 ${st.due} 个</span></div>
+        <div class="list">${dueWords.map((w) => `<div class="list-item"><div><div class="lw">${esc(w.w)}</div><div class="lz">${esc(w.zh)}</div></div><div class="lt">${level(w)}</div></div>`).join('') || '<p class="small muted">今天没有到期的词</p>'}</div>
+      </section>
+      <button class="btn primary" data-act="start:review">开始复习</button>
+      <div class="row2">
+        <button class="btn ghost sm" data-act="open:weak">本周薄弱</button>
+        <button class="btn ghost sm" data-act="tab:quiz">去做测验</button>
+      </div>
     </div>`;
   }
 
@@ -997,29 +1533,34 @@
     const body = revealed
       ? `<div class="divider"></div>
          <div class="meaning">${esc(w.pos)} ${esc(w.zh)}</div>
-         ${w.ex ? `<div class="example">${esc(w.ex)}</div>` : w.def ? `<div class="example en-def">${esc(w.def)}</div>` : ''}`
+         ${w.ex ? `<div class="example selectable">${esc(w.ex)}</div>` : w.def ? `<div class="example en-def selectable">${esc(w.def)}</div>` : ''}
+         ${w.col && w.col.length ? `<div class="example">搭配 ${esc(w.col.join(' · '))}</div>` : ''}
+         ${w.conf && w.conf.length ? `<div class="example">易混 ${esc(w.conf.join(' / '))}</div>` : ''}`
       : `<div class="hint">先回忆一下，再点开对照</div>`;
     return `<div class="screen">
       <div class="study-head">
-        <button class="icon-btn" data-act="pause" aria-label="暂停">←</button>
         <div class="bar-track"><i style="width:${pct}%"></i></div>
         <div class="count">${s.pos + 1}/${s.queue.length}</div>
       </div>
 
+      <div class="stack">
       <section class="flash ${revealed ? '' : 'tappable'}" ${revealed ? '' : 'data-act="reveal"'}>
         <span class="badge ${isNew ? 'new' : 'rev'}">${isNew ? '新词' : '复习'}${topic ? ' · ' + esc(topic.zh) : ''}</span>
         <div class="word">${esc(w.w)}<button class="say" data-act="say:${esc(w.w)}" aria-label="朗读">🔊</button></div>
         ${w.ipa ? `<div class="ipa">${esc(w.ipa)}</div>` : ''}
         ${body}
       </section>
+      </div>
+      <p class="small muted center">左右滑动也可以选择</p>
 
       ${
         revealed
           ? `<div class="grades">
-               <button class="grade bad" data-act="grade:again"><b>不认识</b><span>今天再练</span></button>
-               <button class="grade warn" data-act="grade:hard"><b>模糊</b><span>明天复习</span></button>
-               <button class="grade good" data-act="grade:good"><b>认识</b><span>拉长间隔</span></button>
+               <button class="grade rate bad" data-act="grade:again"><b>忘记</b><span>×</span></button>
+               <button class="grade rate warn" data-act="grade:hard"><b>模糊</b><span>?</span></button>
+               <button class="grade rate good" data-act="grade:good"><b>认识</b><span>✓</span></button>
              </div>
+             <button class="linkbtn" data-act="grade:easy">太简单了</button>
              <button class="linkbtn" data-act="end">结束本组</button>`
           : `<button class="btn primary" data-act="reveal">显示释义</button>`
       }
@@ -1030,7 +1571,7 @@
     const st = stats();
     return `<div class="screen">
       <h1>学习</h1>
-      <p class="small muted">先复习到期的词，再学新词。每组最多 40 张卡片，按记忆程度自动安排下次复习。</p>
+      <p class="small muted">新词按精编 720，再按雅思词表往下排，不再随机抽。复习用 FSRS，到期太多时每天只安排 ${S.settings.dailyReview || 40} 个${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}。</p>
       <div class="chips">
         <div class="chip"><b>${st.due}</b><span>待复习</span></div>
         <div class="chip"><b>${st.newLeft}</b><span>可学新词</span></div>
@@ -1039,6 +1580,11 @@
       <button class="btn primary" data-act="start">开始今日学习</button>
       ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.due} 个</button>` : ''}
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
+      <button class="btn ghost sm" data-act="open:weak">本周薄弱</button>
+      <div class="row2">
+        <button class="btn ghost sm" data-act="tab:library">词库</button>
+        <button class="btn ghost sm" data-act="tab:news">外刊精读</button>
+      </div>
       <h3>四项训练</h3>
       ${trainGrid()}
       <p class="small muted center">记录保存在本机，不会上传。</p>
@@ -1047,8 +1593,8 @@
 
   function studySummary() {
     const s = S.session;
-    const total = s.results.good + s.results.hard + s.results.again;
-    const acc = total ? Math.round((s.results.good / total) * 100) : 0;
+    const total = s.results.good + s.results.hard + s.results.again + (s.results.easy || 0);
+    const acc = total ? Math.round(((s.results.good + (s.results.easy || 0)) / total) * 100) : 0;
     const praise = acc >= 90 ? '记得很稳，继续保持。' : acc >= 70 ? '不错，明天再复习一轮会更牢。' : '别急，重复几次自然会记住。';
     return `<div class="screen">
       <div class="done-hero">
@@ -1083,7 +1629,19 @@
     const w = WORD_MAP.get(item.w) || { w: item.w, pos: '', zh: '', ex: '' };
     const last = q.pos + 1 >= q.items.length;
     const kindLabel = item.kind === 'zh' ? '英译中' : item.kind === 'en' ? '中译英'
-      : item.kind === 'listen' ? '听音选词' : '拼写';
+      : item.kind === 'listen' ? '听音选词' : item.kind === 'type-listen' ? '听写'
+      : item.kind === 'type-en' ? '中译英拼写' : item.kind === 'cloze' ? '句子填空' : '拼写';
+    const typedBlock = item.typed
+      ? (q.answered
+        ? `<div class="feedback ${item.correct ? 'good' : 'bad'}">
+             <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc(item.expect || item.w)}</div>
+             ${item.correct ? '' : `<div class="small">你的答案 ${esc(item.typedValue || '（空）')} · 差异 ${esc(spellDiff(item.typedValue, item.expect || item.w))}</div>`}
+             <div class="small muted">${esc(w.pos)} ${esc(w.zh)}</div>
+           </div>
+           <button class="btn primary" data-act="quiz:next">${last ? '看结果' : '下一题'}</button>`
+        : `<input id="typed" class="draft selectable" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="输入英文">
+           <button class="btn primary" data-act="quiz:typed">提交</button>`)
+      : '';
     const opts = item.options
       .map((label, i) => {
         let cls = 'opt';
@@ -1097,14 +1655,14 @@
         </button>`;
       })
       .join('');
-    const feedback = q.answered
+    const feedback = item.typed ? typedBlock : (q.answered
       ? `<div class="feedback ${item.correct ? 'good' : 'bad'}">
-           <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc(item.options[item.answer])}</div>
+           <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc((item.options || [])[item.answer])}</div>
            <div class="small muted">${esc(w.pos)} ${esc(w.zh)}<button class="say sm" data-act="say:${esc(w.w)}" aria-label="朗读">🔊</button></div>
            ${w.ex ? `<div class="small muted">${esc(w.ex)}</div>` : w.def ? `<div class="small muted">${esc(w.def)}</div>` : ''}
          </div>
          <button class="btn primary" data-act="quiz:next">${last ? '看结果' : '下一题'}</button>`
-      : '';
+      : '');
     return `<div class="screen">
       <div class="study-head">
         <button class="icon-btn" data-act="pause" aria-label="暂停">←</button>
@@ -1112,11 +1670,11 @@
         <div class="count">${q.pos + 1}/${q.items.length}</div>
       </div>
       ${q.mock ? '<div class="mock-timer" id="mockTimer">15:00</div>' : ''}
-      ${item.kind === 'listen'
+      ${item.kind === 'listen' || item.kind === 'type-listen'
         ? `<div class="q-prompt listen"><button class="say big" data-act="say:${esc(item.w)}" aria-label="播放">🔊</button></div>`
         : `<div class="q-prompt ${item.kind === 'zh' ? '' : 'zh'}">${esc(item.prompt)}</div>`}
       <div class="q-hint">${esc(item.hint || kindLabel)}</div>
-      <div class="opts">${opts}</div>
+      ${item.typed ? '' : `<div class="opts">${opts}</div>`}
       ${feedback}
     </div>`;
   }
@@ -1128,7 +1686,10 @@
       ['en', '中译英', '看中文选英文单词'],
       ['spell', '拼写', '看释义选正确拼法'],
       ['listen', '听音选词', '听发音选拼写'],
-      ['mix', '混合模式', '五种题型随机出现'],
+      ['type-listen', '听写', '听发音，把单词打出来'],
+      ['type-en', '中译英拼写', '看中文，输入英文'],
+      ['cloze', '句子填空', '例句里挖空，自己填'],
+      ['mix', '混合模式', '题型随机出现'],
     ];
     if (st.wrong.length >= 4) modes.push(['wrong', '错词专项', `专练 ${st.wrong.length} 个错词`]);
     return `<div class="screen">
@@ -1174,8 +1735,9 @@
       <button class="btn primary" data-act="quiz:again">再来一组</button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:today">回今天</button>
-        <button class="btn ghost sm" data-act="open:wrong">错词本</button>
+        <button class="btn ghost sm" data-act="tab:library">词库</button>
       </div>
+      <button class="btn ghost sm" data-act="open:wrong">错词本</button>
     </div>`;
   }
 
@@ -1191,7 +1753,7 @@
         <div class="hero-info">
           <div class="eyebrow">整体进度</div>
           <div class="hero-num">${st.mastered}<span> / ${st.total} 词</span></div>
-          <div class="hero-sub">已学 ${st.seen} 个 · 正确率 ${st.accuracy}%</div>
+          <div class="hero-sub">已学 ${st.seen} 个 · 正确率 ${st.accuracy}% · 词库 ${WORDS.length} 词</div>
           <div class="pill">🗂 ${TOPICS.length} 个主题</div>
         </div>
       </section>
@@ -1241,26 +1803,53 @@
     return days <= 1 ? '昨天' : days + ' 天前';
   }
 
+  function cleanArticles(items) {
+    const seen = new Set();
+    const out = [];
+    (items || []).forEach((it) => {
+      if (!it || !it.title || !it.url) return;
+      const blob = it.title + ' ' + (it.summary || '') + ' ' + it.url;
+      if (JUNK_RE.test(blob)) return;
+      const key = String(it.url).split('?')[0].toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(it);
+    });
+    return out;
+  }
+
   function fetchNews(manual) {
     if (newsBusy) return;
     if (!window.fetch) return;
     newsBusy = true;
-    fetch(NEWS_URL + '?t=' + Date.now(), { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-      .then((j) => {
-        const items = Array.isArray(j && j.items) ? j.items : [];
-        if (!items.length) throw new Error('empty');
-        S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items };
-        save();
-        newsBusy = false;
-        render();
-        if (manual) toast('已更新 ' + items.length + ' 篇');
-      })
-      .catch(() => {
-        newsBusy = false;
-        render();
-        if (manual) toast('外刊更新失败，稍后再试');
-      });
+    let pending = NEWS_URLS.length;
+    let done = false;
+    NEWS_URLS.forEach((url) => {
+      const loader = (typeof fetchTimeout === 'function')
+        ? fetchTimeout(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), 8000, { cache: 'no-store' })
+        : fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
+      loader
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+        .then((j) => {
+          if (done) return;
+          const items = cleanArticles(j && j.items);
+          if (!items.length) throw new Error('empty');
+          done = true;
+          newsBusy = false;
+          S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items: items };
+          save();
+          render();
+          if (manual) toast('已更新 ' + items.length + ' 篇');
+        })
+        .catch(() => {
+          pending -= 1;
+          if (!done && pending <= 0) {
+            newsBusy = false;
+            render();
+            if (manual) toast('外刊更新失败，稍后再试');
+          }
+        });
+    });
   }
 
   function newsCard(it) {
@@ -1649,6 +2238,7 @@
     const t = String(text || '').trim();
     const words = t.match(/[A-Za-z][A-Za-z'-]*/g) || [];
     const wc = words.length;
+    const zhCount = (t.match(/[\u4e00-\u9fff]/g) || []).length;
     const sents = t.split(/[.!?]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x.split(/\s+/).length > 2; });
     const avg = sents.length ? Math.round(wc / sents.length) : 0;
     const paras = t.split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 20; }).length;
@@ -1667,6 +2257,8 @@
     const out = [];
     out.push({ lv: wc >= 250 ? 'pass' : wc >= 180 ? 'warn' : 'bad', t: '词数 ' + wc,
       d: wc >= 250 ? '达到 250 词要求' : 'Task 2 要求至少 250 词，还差 ' + (250 - wc) + ' 词' });
+    out.push({ lv: 'pass', t: '汉字 ' + zhCount,
+      d: zhCount ? '另有中文 ' + zhCount + ' 字，不计入上面的英文词数' : '没有检测到中文' });
     out.push({ lv: paras >= 4 && paras <= 6 ? 'pass' : 'warn', t: '段落 ' + (paras || 1),
       d: paras >= 4 && paras <= 6 ? '结构完整' : '建议 4–5 段：引言 1 段、两个主体段、结论 1 段' });
     out.push({ lv: used.length >= 5 ? 'pass' : used.length >= 3 ? 'warn' : 'bad', t: '连接词 ' + used.length + ' 种',
@@ -1767,13 +2359,60 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     </div>`;
   }
 
+  function linkifyPassage(paragraph) {
+    return String(paragraph).split(/([A-Za-z][A-Za-z'-]*)/g).map((tok) => {
+      if (/^[A-Za-z]/.test(tok)) {
+        return `<button type="button" class="lookup" data-act="lookup:${esc(tok.toLowerCase())}">${esc(tok)}</button>`;
+      }
+      return esc(tok);
+    }).join('');
+  }
+
+  function lookupSheet() {
+    if (!S.lookup) return '';
+    const w = WORD_MAP.get(S.lookup);
+    if (!w) {
+      return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(S.lookup)}</h3><p>词库里没有这个词。</p><button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
+    }
+    return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(w.w)}</h3><p>${esc(w.pos)} ${esc(w.zh)}</p>${w.ipa ? `<p>${esc(w.ipa)}</p>` : ''}<button class="btn primary" data-act="add-word:${esc(w.w)}">加入今日学习</button><button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
+  }
+
+  function addWord(w) {
+    const word = WORD_MAP.get(w);
+    if (!word) {
+      toast('词库里没有这个词');
+      return;
+    }
+    const rec = ensureRec(word.w);
+    if (!rec.seen) {
+      rec.due = today();
+      rec.pinned = true;
+    }
+    S.lookup = '';
+    save();
+    render();
+    toast('已加入今日学习：' + word.w);
+  }
+
+  function onboardHTML() {
+    if (S.settings.onboarded) return '';
+    const step = S.onboardStep || 0;
+    if (step === 0) {
+      return `<div class="onboard"><div class="eyebrow">第一次打开</div><h2>先把顺序定好</h2><p class="small muted">默认先学精编 720，再进入雅思词表。带录音的词可以离线听；没有录音时，联网发音来自有道词典，也可以改成手机自己的语音。</p><button class="btn primary" data-act="onboard:1">继续</button></div>`;
+    }
+    if (step === 1) {
+      return `<div class="onboard"><h2>每天学多少</h2><p class="small muted">现在是每天 ${S.settings.dailyNew} 个新词，复习上限 ${S.settings.dailyReview || 40} 个。这些都能在「我的」里改。</p><button class="btn primary" data-act="onboard:2">继续</button></div>`;
+    }
+    return `<div class="onboard"><h2>选一个外观</h2><div class="row2"><button class="btn ghost" data-act="theme:dark">深色</button><button class="btn ghost" data-act="theme:light">浅色</button></div><button class="btn primary" data-act="onboard:done">开始使用</button></div>`;
+  }
+
   function passageScreen(i) {
     const p = PASSAGES[i];
     if (!p) return readingScreen();
     return `<div class="screen">
       <span class="ncat">PASSAGE ${i + 1}</span>
       <h1 class="dtitle small">${esc(p.title)}</h1>
-      <article class="passage">${p.text.split(/\n\s*\n/).map(function (par) { return '<p>' + esc(par) + '</p>'; }).join('')}</article>
+      <article class="passage selectable">${p.text.split(/\n\s*\n/).map(function (par) { return '<p>' + linkifyPassage(par) + '</p>'; }).join('')}</article>
       ${p.qs.map(function (q, qi) {
         const key = i + ':' + qi;
         const picked = readPick[key];
@@ -1847,12 +2486,21 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         <input id="examDate" type="date" value="${esc(S.settings.examDate || '')}">
         ${S.settings.examDate ? '<button class="icon-btn sm" data-act="clear-exam" aria-label="清除">×</button>' : ''}
       </div>
+      <h3>怎么称呼你</h3>
+      <div class="date-row"><input id="nick" type="text" maxlength="16" placeholder="显示在首页问候里" value="${esc(S.settings.nickname || '')}"></div>
+      <h3>主题</h3>
+      <div class="seg">
+        <button class="seg-item ${S.settings.theme === 'light' ? '' : 'active'}" data-act="theme:dark">深色</button>
+        <button class="seg-item ${S.settings.theme === 'light' ? 'active' : ''}" data-act="theme:light">浅色</button>
+      </div>
       <h3>真人发音</h3>
       <div class="seg">
         <button class="seg-item ${S.settings.onlineAudio ? '' : 'active'}" data-act="set-audio:0">仅离线</button>
         <button class="seg-item ${S.settings.onlineAudio ? 'active' : ''}" data-act="set-audio:1">联网补全</button>
       </div>
-      <p class="small muted">720 个精编词自带真人录音，离线可听。其余 8500+ 词若开启「联网补全」，会从公开发音接口取音频；关掉就用系统语音合成。</p>
+      <p class="small muted">720 个精编词自带真人录音，离线可听。其余词如果打开「联网补全」，发音来自有道词典的公开接口，需要联网；关掉之后用手机自己的语音合成，声音和是否可用取决于系统。</p>
+      <h3>每天复习上限</h3>
+      ${stepper('review', S.settings.dailyReview || 40, 10, 200, 10, '个到期词 / 天')}
       <h3>每天新词</h3>
       ${stepper('new', S.settings.dailyNew, 5, 200, 5, '个新词 / 天')}
       ${seg('new', [5, 10, 15, 20, 30], S.settings.dailyNew, '')}
@@ -1860,11 +2508,108 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       ${stepper('goal', S.settings.dailyGoal, 10, 300, 10, '张卡片 / 天')}
       ${seg('goal', [10, 20, 30, 50], S.settings.dailyGoal, '')}
       <p class="small muted">学完当天配额后，首页还能点「加练」继续学新词，不受配额限制。调整当天即时生效。</p>
+      <h3>备份</h3>
+      <p class="small muted">学习记录只在这台设备上。可以导出 JSON，或从下面每天自动留下的备份里恢复（保留最近 7 天）。</p>
+      ${loadError || saveError ? `<p class="small" style="color:var(--bad)">${esc(loadError || saveError)}</p>` : ''}
+      <div class="row2">
+        <button class="btn ghost sm" data-act="export">导出 JSON</button>
+        <button class="btn ghost sm" data-act="import">导入 JSON</button>
+      </div>
+      <input id="importFile" type="file" accept="application/json,.json" hidden>
+      <section class="card"><div class="list">${backupRows()}</div></section>
       <button class="btn danger" data-act="ask-reset">重置学习进度</button>
       <button class="btn ghost" data-act="back">返回</button>
       ${lastAudioErr ? `<p class="small muted center">上次发音错误：${esc(lastAudioErr)}</p>` : ''}
       <button class="btn ghost" data-act="check-update">检查更新</button>
       <p class="small muted center">${WORDS.length} 词 · ${TOPICS.length} 个主题 · v${esc(APP_VERSION)}</p>
+    </div>`;
+  }
+
+  function saveBanner() {
+    const msg = saveError || loadError;
+    if (!msg) return '';
+    return `<section class="update-bar save-banner"><div class="ub-body"><b>数据没有保存好</b><span>${esc(msg)}</span></div></section>`;
+  }
+
+  function backupRows() {
+    const list = readBackups();
+    if (!list.length) return '<p class="small muted">还没有每日备份。打开应用时会自动留一份，最多保留 7 天。</p>';
+    return list.map((b) => `<div class="list-item"><div><div class="lw">${esc(b.day || '')}</div><div class="lz">${esc(b.at || '')}</div></div><button class="btn ghost xs" data-act="restore:${esc(b.day || '')}">恢复</button></div>`).join('');
+  }
+
+  function exportState() {
+    const payload = exportPayload();
+    const name = 'ielts-vocab-backup.json';
+    try {
+      if (window.App && window.App.saveText) window.App.saveText(name, payload);
+      if (window.App && window.App.shareText) {
+        window.App.shareText(name, payload);
+        return;
+      }
+      const blob = new Blob([payload], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('已开始下载备份');
+    } catch (e) {
+      toast('导出失败：' + ((e && e.message) || e));
+    }
+  }
+
+  function weekErrors() {
+    const from = addDays(today(), -6);
+    return (S.errorLog || []).filter((e) => e && e.day >= from);
+  }
+
+  function weakReport() {
+    const by = { spell: 0, meaning: 0, recognition: 0 };
+    const per = {};
+    weekErrors().forEach((e) => {
+      if (!by[e.kind] && by[e.kind] !== 0) return;
+      by[e.kind] += 1;
+      if (!per[e.w]) per[e.w] = { w: e.w, spell: 0, meaning: 0, recognition: 0, n: 0 };
+      per[e.w][e.kind] += 1;
+      per[e.w].n += 1;
+    });
+    const list = Object.keys(per).map((w) => per[w]).sort((a, b) => b.n - a.n || a.w.localeCompare(b.w));
+    return { by, list };
+  }
+
+  function queueWeak() {
+    const list = weakReport().list.filter((x) => x.n >= 2);
+    list.forEach((item) => {
+      const rec = ensureRec(item.w);
+      rec.due = today();
+      rec.wdue = today();
+      rec.weak = true;
+    });
+    save();
+    toast(list.length ? '已把 ' + list.length + ' 个薄弱词排进今天' : '这周还没有重复出错的词');
+    render();
+  }
+
+  function weakScreen() {
+    const rep = weakReport();
+    const labels = { spell: '拼写', meaning: '词义', recognition: '再认' };
+    const rows = rep.list.slice(0, 30).map((x) => {
+      const w = WORD_MAP.get(x.w) || { zh: '', pos: '' };
+      const kind = x.spell >= x.meaning && x.spell >= x.recognition ? '拼写' : x.meaning >= x.recognition ? '词义' : '再认';
+      return `<div class="list-item"><div><div class="lw">${esc(x.w)}</div><div class="lz">${esc(w.pos || '')} ${esc(w.zh || '')}</div></div><div class="lt">${kind} · ${x.n} 次</div></div>`;
+    }).join('');
+    return `<div class="screen">
+      <h1>本周薄弱</h1>
+      <p class="small muted">按出错方式分开记：拼写、词义、再认。同一词本周错到 2 次，会自动排进今天的复习。</p>
+      <div class="chips">
+        <div class="chip"><b>${rep.by.spell}</b><span>${labels.spell}</span></div>
+        <div class="chip"><b>${rep.by.meaning}</b><span>${labels.meaning}</span></div>
+        <div class="chip"><b>${rep.by.recognition}</b><span>${labels.recognition}</span></div>
+      </div>
+      ${rows ? `<section class="card"><div class="list">${rows}</div></section>` : '<p class="small muted">这 7 天还没有记下来的错误。</p>'}
+      <button class="btn primary" data-act="queue-weak">把重复出错的词加入今天</button>
+      <button class="btn ghost" data-act="back">返回</button>
     </div>`;
   }
 
@@ -1881,7 +2626,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     }
     return `<div class="screen">
       <h1>错词本</h1>
-      <p class="small muted">答对往后推一档，答错回到第 1 天。每次最多 ${WRONG_BATCH} 个，轮流过一遍，不会总是同一批。</p>
+      <p class="small muted">和普通复习共用同一套记忆状态。答错明天再出现，答对按 FSRS 往后排。每次最多 ${WRONG_BATCH} 个，轮流过一遍。</p>
       <div class="chips">
         <div class="chip"><b>${due}</b><span>今天到期</span></div>
         <div class="chip"><b>${total}</b><span>错词总数</span></div>
@@ -1945,6 +2690,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('wtop:') === 0) return wtopicScreen(Number(S.ui.screen.slice(5)));
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) return wordsScreen(S.ui.screen.slice(6));
     if (S.ui.screen === 'wrong') return wrongScreen();
+    if (S.ui.screen === 'weak') return weakScreen();
     if (S.ui.tab === 'study') return studyScreen();
     if (S.ui.tab === 'quiz') return quizScreen();
     if (S.ui.tab === 'news') {
@@ -1953,6 +2699,8 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       return newsScreen();
     }
     if (S.ui.tab === 'library') return libraryScreen();
+    if (S.ui.tab === 'review') return reviewScreen();
+    if (S.ui.tab === 'me') return settingsScreen();
     return todayScreen();
   }
 
@@ -1980,14 +2728,18 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       (S.ui.tab === 'study' && S.session && !S.session.done) ||
       (S.ui.tab === 'quiz' && S.quiz && !S.quiz.done);
     view.className = 'view' + (focus ? ' no-tabs' : '');
-    view.innerHTML = screenHTML() + modalHTML();
+    document.documentElement.dataset.theme = S.settings.theme === 'light' ? 'light' : 'dark';
+    const ob = document.getElementById('onboard');
+    if (ob) ob.innerHTML = onboardHTML();
+    view.innerHTML = saveBanner() + screenHTML() + modalHTML() + lookupSheet();
     document.getElementById('tabbar').innerHTML = focus ? '' : tabbarHTML();
     if (S.quiz && !S.quiz.done && !S.quiz.answered) {
       const it = S.quiz.items[S.quiz.pos];
-      if (it && it.kind === 'listen') say(it.w);
+      if (it && (it.kind === 'listen' || it.kind === 'type-listen')) say(it.w);
     }
     tickMock();
-    save();
+    const savedOk = save();
+    if (!savedOk && !view.querySelector('.save-banner')) view.insertAdjacentHTML('afterbegin', saveBanner());
   }
 
   /* ---------- 交互 ---------- */
@@ -2013,6 +2765,11 @@ Some caution is warranted. Much of the research uses small samples, and effects 
   }
 
   document.addEventListener('input', (e) => {
+    if (e.target && e.target.id === 'nick') {
+      S.settings.nickname = String(e.target.value || '').slice(0, 16);
+      save();
+      return;
+    }
     if (e.target && e.target.id === 'examDate') {
       S.settings.examDate = e.target.value || '';
       save();
@@ -2030,6 +2787,24 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     wordsView.q = e.target.value;
     wordsView.limit = 60;
     renderWordList();
+  });
+
+  let swipe = null;
+  document.addEventListener('pointerdown', (e) => {
+    const card = e.target.closest && e.target.closest('.flash');
+    if (!card || !S.session || S.session.done || !S.session.revealed) return;
+    swipe = { x: e.clientX, y: e.clientY };
+  });
+  document.addEventListener('pointerup', (e) => {
+    if (!swipe) return;
+    const dx = e.clientX - swipe.x;
+    const dy = e.clientY - swipe.y;
+    swipe = null;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches && Math.abs(dx) < 80) return;
+    if (Math.abs(dx) < 56 && Math.abs(dy) < 56) return;
+    if (Math.abs(dy) > Math.abs(dx) && dy < 0) grade('hard');
+    else if (dx > 0) grade('good');
+    else grade('again');
   });
 
   document.addEventListener('click', (e) => {
@@ -2162,6 +2937,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       case 'quiz':
         if (arg === 'start') startQuiz(parts[2]);
         else if (arg === 'answer') answerQuiz(Number(parts[2]));
+        else if (arg === 'typed') answerTyped();
         else if (arg === 'next') nextQuestion();
         else if (arg === 'again') {
           S.quiz = null;
@@ -2174,6 +2950,33 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         break;
       case 'wrong-quiz-all':
         startQuiz('wrong-all');
+        break;
+      case 'queue-weak':
+        queueWeak();
+        break;
+      case 'theme':
+        S.settings.theme = arg === 'light' ? 'light' : 'dark';
+        save();
+        render();
+        break;
+      case 'onboard':
+        if (arg === 'done') {
+          S.settings.onboarded = true;
+          S.onboardStep = 0;
+        } else S.onboardStep = Number(arg) || 0;
+        save();
+        render();
+        break;
+      case 'lookup':
+        S.lookup = parts.slice(1).join(':');
+        render();
+        break;
+      case 'lookup-close':
+        S.lookup = '';
+        render();
+        break;
+      case 'add-word':
+        addWord(parts.slice(1).join(':'));
         break;
       case 'open':
         S.ui.screen = arg;
@@ -2192,6 +2995,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         const dir = Number(parts[2]) || 0;
         if (arg === 'new') S.settings.dailyNew = Math.max(5, Math.min(200, (S.settings.dailyNew || 15) + dir));
         if (arg === 'goal') S.settings.dailyGoal = Math.max(10, Math.min(300, (S.settings.dailyGoal || 20) + dir));
+        if (arg === 'review') S.settings.dailyReview = Math.max(10, Math.min(200, (S.settings.dailyReview || 40) + dir));
         save();
         render();
         break;
@@ -2222,11 +3026,24 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         }
         break;
       }
+      case 'export':
+        exportState();
+        break;
+      case 'import': {
+        const input = document.getElementById('importFile');
+        if (input) input.click();
+        break;
+      }
+      case 'restore':
+        restoreBackup(parts.slice(1).join(':'));
+        break;
       case 'update':
         if (S.update && window.App && window.App.installUpdate) {
           updateState = 'downloading';
           render();
-          window.App.installUpdate((S.update.urls || [S.update.url]).join('\n'));
+          const lines = httpsOnly(S.update.urls || [S.update.url]);
+          if (S.update.sha256) lines.push('sha256:' + String(S.update.sha256).replace(/^sha256:/i, ''));
+          window.App.installUpdate(lines.join('\n'));
         } else {
           toast('请在浏览器打开 GitHub 页面下载');
         }
@@ -2299,7 +3116,25 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     }
   });
 
+  document.addEventListener('change', (e) => {
+    if (!e.target || e.target.id !== 'importFile' || !e.target.files || !e.target.files[0]) return;
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        importState(JSON.parse(String(reader.result || '')));
+        toast('已导入备份');
+      } catch (err) {
+        toast('导入失败：' + ((err && err.message) || err));
+      }
+    };
+    reader.onerror = () => toast('读取文件失败');
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
   window.addEventListener('load', render);
+  try { snapshotToday(false); } catch (e) { /* 备份失败已经在 snapshotToday 里提示 */ }
   render();
   setTimeout(function () { checkUpdate(false); }, 1500);
   setTimeout(function () { if (newsAge() > NEWS_TTL) fetchNews(false); }, 3500);
@@ -2330,5 +3165,16 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     stats,
     buildQueue,
     startQuiz,
+    save,
+    saveError: () => saveError || loadError,
+    exportPayload,
+    importState,
+    backups: readBackups,
+    restoreBackup,
+    sha256: sha256Hex,
+    acceptHash,
+    chooseUpdate,
+    pickAsset,
+    setFetchMs: (n) => { FETCH_MS = n; },
   };
 })();

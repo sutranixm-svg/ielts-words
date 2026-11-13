@@ -3,12 +3,8 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-let html = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
-html = html
-  .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-  .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+const { inlineHtml } = require('./inline.js');
+let html = inlineHtml(root);
 
 const errors = [];
 const dom = new JSDOM(html, {
@@ -37,7 +33,9 @@ const assert = (cond, msg) => {
 setTimeout(() => {
   try {
     assert(text().includes('今日目标'), 'today screen renders');
-    assert(doc.querySelectorAll('.tab').length === 5, 'five tabs');
+    assert(doc.querySelectorAll('.tab').length === 4, 'four tabs');
+    assert(doc.getElementById('tabbar').textContent.includes('首页'), '首页标签');
+    assert(doc.getElementById('tabbar').textContent.includes('我的'), '我的标签');
 
     click('[data-act^="start"]');
     assert(doc.querySelector('.flash .word'), 'study card shows a word');
@@ -90,7 +88,8 @@ setTimeout(() => {
     assert(text().includes('确认重置'), 'reset confirm opens');
     click('[data-act="cancel"]');
 
-    const saved = JSON.parse(window.localStorage.getItem('ielts.vocab.v1'));
+    const saved = JSON.parse(window.localStorage.getItem('ielts.vocab.v2'));
+    assert(saved && saved.schema === 2, 'progress stored as schema 2');
     assert(saved && saved.settings.dailyNew === 20, 'localStorage persisted');
 
     assert(errors.length === 0, 'no runtime errors' + (errors.length ? ': ' + errors.join(' | ') : ''));

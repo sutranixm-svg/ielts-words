@@ -1,0 +1,177 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 缺少签名 secrets 时直接失败
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=0
+          for name in KEYSTORE_BASE64 KEYSTORE_PASSWORD KEY_ALIAS KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then
+              echo "::error::缺少 secret $name（见 RELEASE.md）"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
+      - name: 核对 tag 与 versionCode
+        id: ver
+        run: |
+          set -euo pipefail
+          TAG="${GITHUB_REF_NAME}"
+          VER="${TAG#v}"
+          NAME=$(sed -n 's/.*android:versionName="\([^"]*\)".*/\1/p' android/AndroidManifest.xml | head -1)
+          CODE=$(sed -n 's/.*android:versionCode="\([0-9]*\)".*/\1/p' android/AndroidManifest.xml | head -1)
+          if [ "$NAME" != "$VER" ]; then
+            echo "::error::tag ${TAG} 与 manifest versionName ${NAME} 不一致"
+            exit 1
+          fi
+          PREV=$(git tag -l 'v*' --sort=-v:refname | grep -vx "$TAG" | head -1 || true)
+          if [ -n "$PREV" ]; then
+            PREV_CODE=$(git show "${PREV}:android/AndroidManifest.xml" | sed -n 's/.*android:versionCode="\([0-9]*\)".*/\1/p' | head -1)
+            if [ -n "$PREV_CODE" ] && [ "$CODE" -le "$PREV_CODE" ]; then
+              echo "::error::versionCode ${CODE} 必须大于 ${PREV} 的 ${PREV_CODE}"
+              exit 1
+            fi
+            echo "previous tag ${PREV} versionCode ${PREV_CODE}"
+          fi
+          echo "version=${VER}" >> "$GITHUB_OUTPUT"
+          echo "code=${CODE}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 安装 Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: 安装 platform 与 build-tools
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses >/dev/null || true
+          SDK="${ANDROID_SDK_ROOT:-$ANDROID_HOME}"
+          echo "$SDK/build-tools/35.0.0" >> "$GITHUB_PATH"
+
+      - name: 解码 keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          test -s "$RUNNER_TEMP/release.jks"
+
+      - name: 编译并签名
+        env:
+          VERSION_NAME: ${{ steps.ver.outputs.version }}
+          VERSION_CODE: ${{ steps.ver.outputs.code }}
+          KEYSTORE: ${{ runner.temp }}/release.jks
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          SIGN: "1"
+        run: bash build.sh
+
+      - name: 核对签名证书
+        run: |
+          set -euo pipefail
+          APK="build/ielts-vocab-${{ steps.ver.outputs.version }}.apk"
+          EXPECTED="4A:DF:68:0B:A5:59:E1:AA:B0:79:17:0A:0E:95:5E:62:93:DC:EA:73:DE:B9:A2:60:0D:84:F5:9B:26:03:E9:AA"
+          GOT=$(apksigner verify --print-certs "$APK" | sed -n 's/.*SHA-256 digest: //p' | head -1 | tr 'a-f' 'A-F')
+          echo "cert SHA-256: $GOT"
+          if [ "$GOT" != "$EXPECTED" ]; then
+            echo "::error::签名证书不是发布证书"
+            exit 1
+          fi
+
+      - name: 生成 version.json
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          CODE="${{ steps.ver.outputs.code }}"
+          export VER CODE
+          python3 - <<'PY'
+          import hashlib, json, os
+          ver = os.environ["VER"]
+          code = int(os.environ["CODE"])
+          apk = "build/ielts-vocab-%s.apk" % ver
+          data = open(apk, "rb").read()
+          digest = hashlib.sha256(data).hexdigest()
+          name = "ielts-vocab-%s.apk" % ver
+          release = "https://github.com/sutranixm-svg/ielts-words/releases/download/v%s/%s" % (ver, name)
+          raw = "https://github.com/sutranixm-svg/ielts-words/raw/dist/%s" % name
+          doc = {
+            "version": ver,
+            "versionCode": code,
+            "size": len(data),
+            "sha256": digest,
+            "urls": [
+              release,
+              "https://ghfast.top/" + release,
+              "https://ghfast.top/" + raw,
+              "https://gcore.jsdelivr.net/gh/sutranixm-svg/ielts-words@dist/" + name,
+              "https://cdn.jsdelivr.net/gh/sutranixm-svg/ielts-words@dist/" + name,
+            ],
+          }
+          with open("build/version.json", "w", encoding="utf-8") as f:
+            json.dump(doc, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+          print(digest, len(data))
+          PY
+
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          gh release create "$GITHUB_REF_NAME" "build/ielts-vocab-${VER}.apk" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "雅思单词 ${VER}。安装包 ielts-vocab-${VER}.apk。同一份文件和 version.json 在 dist 分支。" \
+            --verify-tag
+
+      - name: 把 APK 和 version.json 推到 dist
+        run: |
+          set -euo pipefail
+          VER="${{ steps.ver.outputs.version }}"
+          cp "build/ielts-vocab-${VER}.apk" "/tmp/ielts-vocab-${VER}.apk"
+          cp build/version.json /tmp/version.json
+          if git ls-remote --exit-code origin refs/heads/dist >/dev/null 2>&1; then
+            git fetch origin dist
+            git worktree add --detach /tmp/dist origin/dist
+          else
+            mkdir -p /tmp/dist
+            git -C /tmp/dist init -b dist
+            git -C /tmp/dist remote add origin "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"
+          fi
+          cp "/tmp/ielts-vocab-${VER}.apk" "/tmp/dist/ielts-vocab-${VER}.apk"
+          cp /tmp/version.json /tmp/dist/version.json
+          git -C /tmp/dist add "ielts-vocab-${VER}.apk" version.json
+          git -C /tmp/dist -c user.email="actions@users.noreply.github.com" -c user.name="release-bot" \
+            commit -m "dist: v${VER}"
+          git -C /tmp/dist push origin HEAD:dist
