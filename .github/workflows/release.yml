@@ -69,6 +69,12 @@ jobs:
 
       - name: 安装 Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # v3 defaults to "tools platform-tools". Google no longer ships tools,
+          # so sdkmanager fails with "Failed to find package 'tools'".
+          # build.sh needs platforms;android-35 (android.jar) and build-tools;35.0.0
+          # (aapt, d8, zipalign, apksigner). cmdline-tools comes with the action.
+          packages: "platform-tools platforms;android-35 build-tools;35.0.0"
 
       - name: 安装 platform 与 build-tools
         run: |
