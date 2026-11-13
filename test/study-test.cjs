@@ -3,12 +3,8 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-let html = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
-html = html
-  .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-  .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+const { inlineHtml } = require('./inline.js');
+let html = inlineHtml(root);
 
 const errors = [];
 const dom = new JSDOM(html, {
@@ -97,7 +93,8 @@ setTimeout(() => {
     }
     const recAdv = S().words[round1[0]];
     assert(recAdv.wstep === 1, '答对后间隔档位 +1');
-    assert(recAdv.wdue === addDays(2), '答对后下次复习推后到 2 天后（wdue=' + recAdv.wdue + '）');
+    assert(recAdv.wdue > today && recAdv.due === recAdv.wdue, '答对后主记忆和错词本用同一个更晚的到期日（' + recAdv.wdue + '）');
+    assert(recAdv.stability > 0, '答对后写入 FSRS 稳定度');
 
     click('[data-act="quiz:again"]');
     click('[data-act="tab:today"]');
@@ -121,7 +118,7 @@ setTimeout(() => {
     }
     const recReset = S().words[round2[0]];
     assert(recReset.wstep === 0, '答错后回到第 1 档');
-    assert(recReset.wdue === addDays(1), '答错后明天再复习（wdue=' + recReset.wdue + '）');
+    assert(recReset.wdue === addDays(1) && recReset.due === recReset.wdue, '答错后明天再复习，且只有一套到期日（wdue=' + recReset.wdue + '）');
 
     // 全部过一遍
     click('[data-act="quiz:again"]');

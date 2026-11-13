@@ -3,12 +3,8 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-let html = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
-html = html
-  .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-  .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+const { inlineHtml } = require('./inline.js');
+let html = inlineHtml(root);
 
 const errors = [];
 const dom = new JSDOM(html, {
@@ -38,21 +34,25 @@ const S = () => window.__ielts.state();
 
 setTimeout(() => {
   try {
-    // 默认全选
-    assert(S().settings.decks.length === 8, '默认 8 个词库全选');
-    assert(text().includes('8/8 个词库'), '今天页显示 8/8 个词库');
-    assert(text().includes('9277 词'), '今天页显示总词数 9277');
+    // 默认精编 720 + 雅思，不含托福
+    assert(S().settings.decks.length === 7, '默认 7 个词库（精编 + 雅思）');
+    assert(S().settings.decks.indexOf('toefl') < 0, '默认不选托福');
+    assert(text().includes('7/8 个词库'), '今天页显示 7/8 个词库');
+    assert(text().includes('5371 词'), '今天页显示在学词数 5371');
+    const topicOfEarly = new Map(window.WORDS.map((w) => [w.w, w.t]));
+    const firstNew = window.__ielts.buildQueue('new').queue[0];
+    assert(topicOfEarly.get(firstNew.w) === 'education', '新词从精编教育按顺序开始：' + firstNew.w);
 
     // 进入学习范围
     click('[data-act="open:decks"]');
     assert(text().includes('学习范围'), '进入学习范围页');
     assert(doc.querySelectorAll('.deck').length === 8, '列出 8 个词库');
 
-    // 取消托福
-    click('[data-act="deck:toefl"]');
-    assert(S().settings.decks.length === 7, '取消勾选后剩 7 个');
-    assert(S().settings.decks.indexOf('toefl') < 0, 'toefl 已从选择中移除');
-    const left = 9277 - 3906;
+    // 取消雅思，只留精编
+    click('[data-act="deck:ielts"]');
+    assert(S().settings.decks.length === 6, '取消勾选后剩 6 个');
+    assert(S().settings.decks.indexOf('ielts') < 0, 'ielts 已从选择中移除');
+    const left = 5371 - 4651;
     const stat = window.__ielts.stats();
     assert(stat.total === left, '统计总数随选择变化：' + stat.total + ' / ' + left);
 
@@ -60,7 +60,7 @@ setTimeout(() => {
     const built = window.__ielts.buildQueue('new');
     const topicOf = new Map(window.WORDS.map((w) => [w.w, w.t]));
     assert(built.queue.length > 0, '仍有可学新词');
-    assert(built.queue.every((q) => topicOf.get(q.w) !== 'toefl'), '队列里没有未选词库的词');
+    assert(built.queue.every((q) => topicOf.get(q.w) !== 'ielts' && topicOf.get(q.w) !== 'toefl'), '队列里没有未选词库的词');
 
     // 全不选
     click('[data-act="deck-none"]');

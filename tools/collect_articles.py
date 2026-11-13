@@ -110,6 +110,14 @@ def parse_feed(raw):
     return items
 
 
+JUNK_RE = re.compile(r"sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword", re.I)
+
+
+def is_junk(title, summary, url):
+    blob = " ".join([title or "", summary or "", url or ""])
+    return bool(JUNK_RE.search(blob))
+
+
 def shorten(text, limit=280):
     text = re.sub(r"\s+", " ", text or "").strip()
     if len(text) <= limit:
@@ -212,6 +220,8 @@ def main():
             fresh = [i for i in items if i["pub"] and i["pub"] >= cutoff]
             fresh.sort(key=lambda x: x["pub"], reverse=True)
             for rank, it in enumerate(fresh[:8]):
+                if is_junk(it["title"], it["summary"], it["url"]):
+                    continue
                 pool.append({
                     "cat": cat, "src": name, "title": it["title"], "url": it["url"],
                     "summary": it["summary"], "pub": it["pub"],

@@ -3,18 +3,14 @@ const path = require('path');
 const { JSDOM } = require('jsdom');
 
 const root = path.resolve(__dirname, '..');
-const html0 = fs.readFileSync(path.join(root, 'web/index.html'), 'utf8');
-const words = fs.readFileSync(path.join(root, 'web/words.js'), 'utf8');
-const app = fs.readFileSync(path.join(root, 'web/app.js'), 'utf8');
+const { inlineHtml } = require('./inline.js');
 
 const ASSET = 'https://github.com/sutranixm-svg/ielts-words/releases/download/v9.9.9/ielts-vocab.apk';
 
 function boot({ version = '1.2.0', tag = 'v9.9.9', withBridge = true } = {}) {
   const calls = [];
   const errors = [];
-  const html = html0
-    .replace('<script src="words.js"></script>', '<script>' + words + '</script>')
-    .replace('<script src="app.js"></script>', '<script>' + app + '</script>');
+  const html = inlineHtml(root);
   const dom = new JSDOM(html, {
     runScripts: 'dangerously',
     url: 'https://ielts.local/',

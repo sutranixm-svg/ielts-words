@@ -3,6 +3,15 @@
 (function () {
   const WORDS = window.WORDS || [];
   const TOPICS = window.TOPICS || [];
+  const EXTRA = window.LEXICON_EXTRA || {};
+  WORDS.forEach((w, i) => {
+    w._i = i;
+    const x = EXTRA[w.w] || EXTRA[String(w.w).toLowerCase()];
+    if (!x) return;
+    if (!w.ipa && x.ipa) w.ipa = x.ipa;
+    if (x.col && x.col.length) w.col = x.col;
+    if (x.conf && x.conf.length) w.conf = x.conf;
+  });
   const WORD_MAP = new Map(WORDS.map((w) => [w.w, w]));
   const TOPIC_MAP = new Map(TOPICS.map((t) => [t.id, t]));
   const KEY_V1 = 'ielts.vocab.v1';
@@ -12,14 +21,20 @@
   const INTERVALS = [1, 2, 4, 8, 16, 32];
   const MASTER_BOX = 4;
   const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
-  const KINDS = ['zh', 'en', 'spell', 'listen'];
-  // 艾宾浩斯复习间隔（天）：错词按这个节奏往后推
-  const EBB = [1, 2, 4, 7, 15, 30, 60];
+  const KINDS = ['zh', 'en', 'spell', 'listen', 'type-en', 'type-listen', 'cloze'];
+  const BOOK_RANK = { education: 0, environment: 1, health: 2, society: 3, technology: 4, work: 5, ielts: 6, toefl: 7 };
   const WRONG_BATCH = 20;
   const REPO = 'sutranixm-svg/ielts-words';
   const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
   const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
+  const NEWS_URLS = [
+    NEWS_URL,
+    'https://ghfast.top/' + NEWS_URL,
+    'https://cdn.jsdelivr.net/gh/' + REPO + '@main/data/articles.json',
+    'https://gcore.jsdelivr.net/gh/' + REPO + '@main/data/articles.json',
+  ];
+  const JUNK_RE = /sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword/i;
   // 版本清单和安装包都只走 https。文件名按版本号拼，不使用 assets[0]。
   /** 按版本号拼出各镜像上的安装包地址。 */
   function mirrorUrls(ver) {
@@ -99,7 +114,7 @@
         dailyReview: 40,
         examDate: '',
         onlineAudio: true,
-        decks: TOPICS.map((t) => t.id),
+        decks: defaultDeckIds(),
         theme: 'dark',
         nickname: '',
         onboarded: false,
@@ -164,6 +179,7 @@
 
   // 跨天时丢弃旧的学习队列，避免第二天接着昨天的卡
   if (S.session && S.session.day && S.session.day !== dayStr()) S.session = null;
+  Object.keys(S.words).forEach((w) => ensureFsrs(S.words[w]));
 
   function save() {
     try {
@@ -260,32 +276,115 @@
     if (!S.days[day]) S.days[day] = { new: 0, review: 0, right: 0, wrong: 0 };
     return S.days[day];
   }
+  function defaultDeckIds() {
+    const curated = ['education', 'environment', 'health', 'society', 'technology', 'work'];
+    return curated.filter((id) => TOPIC_MAP.has(id)).concat(TOPIC_MAP.has('ielts') ? ['ielts'] : []);
+  }
+
+  function pathRank(w) {
+    const book = BOOK_RANK[w.t] == null ? 9 : BOOK_RANK[w.t];
+    const len = w.t === 'ielts' || w.t === 'toefl' ? String(w.w).length : 0;
+    return book * 100000 + len * 1000 + (w._i || 0);
+  }
+
+  function stabilityToBox(s) {
+    if (s >= 32) return 5;
+    if (s >= 16) return 4;
+    if (s >= 8) return 3;
+    if (s >= 4) return 2;
+    if (s >= 1) return 1;
+    return 0;
+  }
+
+  function ratingOf(grade) {
+    if (grade === 'again') return 1;
+    if (grade === 'hard') return 2;
+    if (grade === 'easy') return 4;
+    return 3;
+  }
+
+  function ensureFsrs(rec) {
+    if (!rec) return rec;
+    rec.err = rec.err || { spell: 0, meaning: 0, recognition: 0 };
+    if (!rec.due) rec.due = today();
+    if (rec.wdue && rec.due && rec.wdue < rec.due) rec.due = rec.wdue;
+    rec.wdue = rec.wdue || rec.due;
+    if (typeof rec.stability === 'number' && rec.stability > 0) return rec;
+    const box = rec.box || 0;
+    rec.stability = rec.seen ? (box <= 0 ? 1 : [1, 2, 4, 8, 16, 32][Math.min(5, box)] || 1) : 0;
+    rec.difficulty = typeof rec.difficulty === 'number' ? rec.difficulty : 5;
+    rec.reps = rec.reps || rec.seen || 0;
+    rec.lapses = rec.lapses || rec.wrong || 0;
+    rec.state = !rec.seen ? 'new' : (rec.stability >= 16 ? 'review' : 'learning');
+    return rec;
+  }
+
   function ensureRec(w) {
     if (!S.words[w]) {
-      S.words[w] = { box: 0, due: today(), seen: 0, right: 0, wrong: 0, first: today(), last: null,
-                     wstep: 0, wdue: today(), wlast: null };
+      S.words[w] = {
+        box: 0, due: today(), seen: 0, right: 0, wrong: 0, first: today(), last: null,
+        wstep: 0, wdue: today(), wlast: null,
+        stability: 0, difficulty: 5, reps: 0, lapses: 0, state: 'new',
+        err: { spell: 0, meaning: 0, recognition: 0 },
+      };
     }
-    return S.words[w];
+    return ensureFsrs(S.words[w]);
   }
+
   function applyGrade(rec, grade, day = today()) {
-    const first = rec.seen === 0;
-    rec.seen += 1;
+    ensureFsrs(rec);
+    const first = !rec.seen;
+    let elapsed = 0;
+    const prev = rec.lastReview || rec.last;
+    if (prev) elapsed = Math.max(0, dayNum(day) - dayNum(prev));
+    if (elapsed === 0 && rec.reps && rec.due && rec.due <= day) elapsed = 1;
+    const nxt = (window.FSRS || FSRS).next(rec, ratingOf(grade), elapsed);
+    rec.stability = nxt.stability;
+    rec.difficulty = nxt.difficulty;
+    rec.reps = nxt.reps;
+    rec.lapses = nxt.lapses;
+    rec.state = nxt.state;
+    rec.scheduledDays = nxt.scheduledDays;
+    rec.due = addDays(day, nxt.scheduledDays);
+    rec.wdue = rec.due;
+    rec.box = stabilityToBox(rec.stability);
     rec.last = day;
-    if (grade === 'good') {
-      rec.right += 1;
-      rec.box = Math.min(5, (rec.box || 0) + 1);
-      rec.due = addDays(day, INTERVALS[rec.box]);
-    } else if (grade === 'hard') {
-      rec.box = Math.max(1, rec.box || 0);
-      rec.due = addDays(day, 1);
+    rec.lastReview = day;
+    rec.wlast = day;
+    rec.seen = (rec.seen || 0) + 1;
+    if (grade === 'again') {
+      rec.wrong = (rec.wrong || 0) + 1;
+      rec.wstep = 0;
     } else {
-      rec.wrong += 1;
-      rec.box = 0;
-      rec.due = addDays(day, 1);
-      markWrong(rec, day);
+      if (grade === 'good' || grade === 'easy') rec.right = (rec.right || 0) + 1;
+      rec.wstep = Math.min(6, (rec.wstep || 0) + 1);
     }
     if (first) rec.first = day;
     return rec;
+  }
+
+  function noteError(word, kind) {
+    const rec = S.words[word];
+    if (rec) {
+      rec.err = rec.err || { spell: 0, meaning: 0, recognition: 0 };
+      if (rec.err[kind] == null) rec.err[kind] = 0;
+      rec.err[kind] += 1;
+    }
+    S.errorLog = Array.isArray(S.errorLog) ? S.errorLog : [];
+    S.errorLog.push({ day: today(), w: word, kind: kind });
+    if (S.errorLog.length > 500) S.errorLog = S.errorLog.slice(-500);
+    const from = addDays(today(), -6);
+    const n = S.errorLog.filter((e) => e.w === word && e.day >= from).length;
+    if (n >= 2 && rec) {
+      rec.due = today();
+      rec.wdue = today();
+      rec.weak = true;
+    }
+  }
+
+  function activityOf(r) {
+    if (!r) return 0;
+    return (r.new || 0) + (r.review || 0) + (r.quiz || 0);
   }
 
   /* ---------- 词库选择 ---------- */
@@ -364,7 +463,7 @@
     for (let i = 6; i >= 0; i -= 1) {
       const dd = addDays(day, -i);
       const r = S.days[dd];
-      week.push({ day: dd, label: shortDay(dd), value: r ? (r.new || 0) + (r.review || 0) : 0 });
+      week.push({ day: dd, label: shortDay(dd), value: activityOf(r) });
     }
     const wrong = [];
     for (const w of WORDS) {
@@ -388,7 +487,8 @@
     }
     const total = deckWords().length;
     return {
-      today: { new: d.new || 0, review: d.review || 0, total: (d.new || 0) + (d.review || 0) },
+      today: { new: d.new || 0, review: d.review || 0, quiz: d.quiz || 0, total: activityOf(d) },
+      backlog: Math.max(0, due - Math.min(due, Math.max(5, Math.min(200, S.settings.dailyReview || 40)))),
       newLeft: Math.max(0, S.settings.dailyNew - (d.new || 0)),
       due,
       seen,
@@ -404,8 +504,7 @@
   }
 
   function studiedOn(day) {
-    const r = S.days[day];
-    return Boolean(r && (r.new || 0) + (r.review || 0) > 0);
+    return activityOf(S.days[day]) > 0;
   }
 
   /* ---------- 学习队列 ---------- */
@@ -423,12 +522,14 @@
         const rb = S.words[b.w];
         return ra.due.localeCompare(rb.due) || (ra.box || 0) - (rb.box || 0);
       })
-      .slice(0, 40);
+      .slice(0, Math.max(5, Math.min(200, S.settings.dailyReview || 40)));
     const todayNew = (S.days[day] && S.days[day].new) || 0;
-    const cap = Math.max(0, S.settings.dailyNew - todayNew);
-    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen);
-    const extraSize = Math.max(10, S.settings.dailyNew || 15);
-    const newPicked = shuffle(unseen, rnd).slice(0, mode === 'extra' ? extraSize : cap);
+    const goalLeft = Math.max(0, (S.settings.dailyGoal || 0) - activityOf(S.days[day]));
+    const newRoom = Math.max(0, S.settings.dailyNew - todayNew);
+    const cap = mode === 'extra' ? Math.max(10, S.settings.dailyNew || 15) : Math.min(newRoom, goalLeft);
+    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen)
+      .sort((a, b) => pathRank(a) - pathRank(b) || a.w.localeCompare(b.w));
+    const newPicked = unseen.slice(0, cap);
 
     if (mode === 'review') return { queue: due.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: due.length };
     if (mode === 'new' || mode === 'extra') return { queue: newPicked.map((w) => ({ w: w.w, kind: 'new' })), newCount: newPicked.length, reviewCount: 0 };
@@ -466,7 +567,7 @@
       pos: 0,
       revealed: false,
       done: false,
-      results: { good: 0, hard: 0, again: 0 },
+      results: { good: 0, hard: 0, again: 0, easy: 0 },
       newCount: built.newCount,
       reviewCount: built.reviewCount,
       requeued: {},
@@ -488,8 +589,11 @@
     const d = dayRec();
     if (first) d.new += 1;
     else d.review += 1;
-    if (g === 'good') d.right += 1;
-    if (g === 'again') d.wrong += 1;
+    if (g === 'good' || g === 'easy') d.right += 1;
+    if (g === 'again') {
+      d.wrong += 1;
+      noteError(item.w, 'recognition');
+    } else if (g === 'hard') noteError(item.w, 'meaning');
     s.results[g] += 1;
     if (g === 'again') {
       const n = s.requeued[item.w] || 0;
@@ -565,6 +669,24 @@
       const opts = shuffle([word.w, ...others.map((w) => w.w)]);
       return { w: word.w, kind, prompt: `${word.pos} ${word.zh}`, hint: '选出对应的英文单词', options: opts, answer: opts.indexOf(word.w), chosen: null, correct: null };
     }
+    if (kind === 'type-en' || kind === 'type-listen' || kind === 'cloze') {
+      let prompt = word.zh;
+      let hint = '输入英文单词，忽略大小写和首尾空格';
+      if (kind === 'type-listen') {
+        prompt = '';
+        hint = '听发音，把单词打出来';
+      }
+      if (kind === 'cloze') {
+        const re = new RegExp('\\b' + String(word.w).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i');
+        if (!word.ex || !re.test(word.ex)) return null;
+        prompt = word.ex.replace(re, '______');
+        hint = '根据句子填入单词';
+      }
+      return {
+        w: word.w, kind, prompt, hint, options: [], answer: 0, chosen: null, correct: null,
+        typed: true, expect: word.w,
+      };
+    }
     const spell = spellDistractors(word.w, safePool);
     const opts = shuffle([word.w, ...spell]);
     return {
@@ -620,9 +742,12 @@
       }
     } else {
       pool = seen.length >= 10 ? seen : all;
+      if (kind === 'cloze') {
+        pool = pool.filter((w) => w.ex && new RegExp('\\b' + w.w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'i').test(w.ex));
+      }
       picked = sample(pool, Math.min(10, pool.length));
       if (picked.length < 4) {
-        toast('词库太小，先学几个词吧');
+        toast(kind === 'cloze' ? '带例句的词不够，先学一组精编词' : '词库太小，先学几个词吧');
         return;
       }
     }
@@ -632,7 +757,7 @@
       if (kind === 'wrong' || kind === 'wrong-all') k = i % 3 === 2 ? 'spell' : (i % 2 === 0 ? 'zh' : 'en');
       if (!KINDS.includes(k)) k = 'zh';
       return makeItem(w, k, pool);
-    });
+    }).filter(Boolean);
     S.quiz = { kind, items, pos: 0, answered: false, score: 0, done: false };
     S.ui.tab = 'quiz';
     S.ui.screen = null;
@@ -640,39 +765,64 @@
     render();
   }
 
+  function normAnswer(s) {
+    return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ').replace(/[’‘]/g, "'");
+  }
+
+  function errorKindOf(kind) {
+    if (kind === 'spell' || kind === 'type-en' || kind === 'type-listen' || kind === 'cloze') return 'spell';
+    if (kind === 'listen') return 'recognition';
+    return 'meaning';
+  }
+
+  function spellDiff(typed, expect) {
+    const a = normAnswer(typed);
+    const b = normAnswer(expect);
+    let out = '';
+    const n = Math.max(a.length, b.length);
+    for (let i = 0; i < n; i += 1) out += a[i] && a[i] === b[i] ? a[i] : '·';
+    return out;
+  }
+
+  function settleQuizItem(item) {
+    const q = S.quiz;
+    if (q.kind === 'syn') return;
+    const d = dayRec();
+    d.quiz = (d.quiz || 0) + 1;
+    if (item.correct) d.right += 1;
+    else d.wrong += 1;
+    const rec = S.words[item.w];
+    if (!rec || !rec.seen) return;
+    applyGrade(rec, item.correct ? 'good' : 'again');
+    if (!item.correct) noteError(item.w, errorKindOf(item.kind));
+  }
+
   function answerQuiz(i) {
     const q = S.quiz;
     if (!q || q.done || q.answered) return;
     const item = q.items[q.pos];
+    if (item.typed) return;
     item.chosen = i;
     item.correct = i === item.answer;
     q.answered = true;
     if (item.correct) q.score += 1;
-    const rec = S.words[item.w];
-    if (q.kind === 'syn') {
-      save();
-      render();
-      return;
-    }
-    if (rec && rec.seen) {
-      if (q.kind === 'wrong' || q.kind === 'wrong-all') {
-        const day = today();
-        if (item.correct) {
-          rec.right = (rec.right || 0) + 1;
-          rec.box = Math.min(5, (rec.box || 0) + 1);
-          rec.due = addDays(day, INTERVALS[rec.box]);
-          markWrongPassed(rec, day);
-        } else {
-          rec.wrong = (rec.wrong || 0) + 1;
-          rec.box = 0;
-          rec.due = addDays(day, 1);
-          markWrong(rec, day);
-        }
-        rec.last = day;
-      } else {
-        applyGrade(rec, item.correct ? 'good' : 'again');
-      }
-    }
+    settleQuizItem(item);
+    save();
+    render();
+  }
+
+  function answerTyped() {
+    const q = S.quiz;
+    if (!q || q.done || q.answered) return;
+    const item = q.items[q.pos];
+    const input = document.getElementById('typed');
+    const value = input ? input.value : '';
+    item.typedValue = value;
+    item.correct = normAnswer(value) === normAnswer(item.expect || item.w);
+    item.chosen = item.correct ? 0 : -1;
+    q.answered = true;
+    if (item.correct) q.score += 1;
+    settleQuizItem(item);
     save();
     render();
   }
@@ -1301,7 +1451,9 @@
     const body = revealed
       ? `<div class="divider"></div>
          <div class="meaning">${esc(w.pos)} ${esc(w.zh)}</div>
-         ${w.ex ? `<div class="example">${esc(w.ex)}</div>` : w.def ? `<div class="example en-def">${esc(w.def)}</div>` : ''}`
+         ${w.ex ? `<div class="example selectable">${esc(w.ex)}</div>` : w.def ? `<div class="example en-def selectable">${esc(w.def)}</div>` : ''}
+         ${w.col && w.col.length ? `<div class="example">搭配 ${esc(w.col.join(' · '))}</div>` : ''}
+         ${w.conf && w.conf.length ? `<div class="example">易混 ${esc(w.conf.join(' / '))}</div>` : ''}`
       : `<div class="hint">先回忆一下，再点开对照</div>`;
     return `<div class="screen">
       <div class="study-head">
@@ -1324,6 +1476,7 @@
                <button class="grade warn" data-act="grade:hard"><b>模糊</b><span>明天复习</span></button>
                <button class="grade good" data-act="grade:good"><b>认识</b><span>拉长间隔</span></button>
              </div>
+             <button class="linkbtn" data-act="grade:easy">太简单了</button>
              <button class="linkbtn" data-act="end">结束本组</button>`
           : `<button class="btn primary" data-act="reveal">显示释义</button>`
       }
@@ -1334,7 +1487,7 @@
     const st = stats();
     return `<div class="screen">
       <h1>学习</h1>
-      <p class="small muted">先复习到期的词，再学新词。每组最多 40 张卡片，按记忆程度自动安排下次复习。</p>
+      <p class="small muted">新词按精编 720，再按雅思词表往下排，不再随机抽。复习用 FSRS，到期太多时每天只安排 ${S.settings.dailyReview || 40} 个${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}。</p>
       <div class="chips">
         <div class="chip"><b>${st.due}</b><span>待复习</span></div>
         <div class="chip"><b>${st.newLeft}</b><span>可学新词</span></div>
@@ -1343,6 +1496,7 @@
       <button class="btn primary" data-act="start">开始今日学习</button>
       ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.due} 个</button>` : ''}
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
+      <button class="btn ghost sm" data-act="open:weak">本周薄弱</button>
       <h3>四项训练</h3>
       ${trainGrid()}
       <p class="small muted center">记录保存在本机，不会上传。</p>
@@ -1351,8 +1505,8 @@
 
   function studySummary() {
     const s = S.session;
-    const total = s.results.good + s.results.hard + s.results.again;
-    const acc = total ? Math.round((s.results.good / total) * 100) : 0;
+    const total = s.results.good + s.results.hard + s.results.again + (s.results.easy || 0);
+    const acc = total ? Math.round(((s.results.good + (s.results.easy || 0)) / total) * 100) : 0;
     const praise = acc >= 90 ? '记得很稳，继续保持。' : acc >= 70 ? '不错，明天再复习一轮会更牢。' : '别急，重复几次自然会记住。';
     return `<div class="screen">
       <div class="done-hero">
@@ -1387,7 +1541,19 @@
     const w = WORD_MAP.get(item.w) || { w: item.w, pos: '', zh: '', ex: '' };
     const last = q.pos + 1 >= q.items.length;
     const kindLabel = item.kind === 'zh' ? '英译中' : item.kind === 'en' ? '中译英'
-      : item.kind === 'listen' ? '听音选词' : '拼写';
+      : item.kind === 'listen' ? '听音选词' : item.kind === 'type-listen' ? '听写'
+      : item.kind === 'type-en' ? '中译英拼写' : item.kind === 'cloze' ? '句子填空' : '拼写';
+    const typedBlock = item.typed
+      ? (q.answered
+        ? `<div class="feedback ${item.correct ? 'good' : 'bad'}">
+             <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc(item.expect || item.w)}</div>
+             ${item.correct ? '' : `<div class="small">你的答案 ${esc(item.typedValue || '（空）')} · 差异 ${esc(spellDiff(item.typedValue, item.expect || item.w))}</div>`}
+             <div class="small muted">${esc(w.pos)} ${esc(w.zh)}</div>
+           </div>
+           <button class="btn primary" data-act="quiz:next">${last ? '看结果' : '下一题'}</button>`
+        : `<input id="typed" class="draft selectable" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="输入英文">
+           <button class="btn primary" data-act="quiz:typed">提交</button>`)
+      : '';
     const opts = item.options
       .map((label, i) => {
         let cls = 'opt';
@@ -1401,14 +1567,14 @@
         </button>`;
       })
       .join('');
-    const feedback = q.answered
+    const feedback = item.typed ? typedBlock : (q.answered
       ? `<div class="feedback ${item.correct ? 'good' : 'bad'}">
-           <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc(item.options[item.answer])}</div>
+           <div class="fb-title">${item.correct ? '答对了' : '正确答案：' + esc((item.options || [])[item.answer])}</div>
            <div class="small muted">${esc(w.pos)} ${esc(w.zh)}<button class="say sm" data-act="say:${esc(w.w)}" aria-label="朗读">🔊</button></div>
            ${w.ex ? `<div class="small muted">${esc(w.ex)}</div>` : w.def ? `<div class="small muted">${esc(w.def)}</div>` : ''}
          </div>
          <button class="btn primary" data-act="quiz:next">${last ? '看结果' : '下一题'}</button>`
-      : '';
+      : '');
     return `<div class="screen">
       <div class="study-head">
         <button class="icon-btn" data-act="pause" aria-label="暂停">←</button>
@@ -1416,11 +1582,11 @@
         <div class="count">${q.pos + 1}/${q.items.length}</div>
       </div>
       ${q.mock ? '<div class="mock-timer" id="mockTimer">15:00</div>' : ''}
-      ${item.kind === 'listen'
+      ${item.kind === 'listen' || item.kind === 'type-listen'
         ? `<div class="q-prompt listen"><button class="say big" data-act="say:${esc(item.w)}" aria-label="播放">🔊</button></div>`
         : `<div class="q-prompt ${item.kind === 'zh' ? '' : 'zh'}">${esc(item.prompt)}</div>`}
       <div class="q-hint">${esc(item.hint || kindLabel)}</div>
-      <div class="opts">${opts}</div>
+      ${item.typed ? '' : `<div class="opts">${opts}</div>`}
       ${feedback}
     </div>`;
   }
@@ -1432,7 +1598,10 @@
       ['en', '中译英', '看中文选英文单词'],
       ['spell', '拼写', '看释义选正确拼法'],
       ['listen', '听音选词', '听发音选拼写'],
-      ['mix', '混合模式', '五种题型随机出现'],
+      ['type-listen', '听写', '听发音，把单词打出来'],
+      ['type-en', '中译英拼写', '看中文，输入英文'],
+      ['cloze', '句子填空', '例句里挖空，自己填'],
+      ['mix', '混合模式', '题型随机出现'],
     ];
     if (st.wrong.length >= 4) modes.push(['wrong', '错词专项', `专练 ${st.wrong.length} 个错词`]);
     return `<div class="screen">
@@ -1495,7 +1664,7 @@
         <div class="hero-info">
           <div class="eyebrow">整体进度</div>
           <div class="hero-num">${st.mastered}<span> / ${st.total} 词</span></div>
-          <div class="hero-sub">已学 ${st.seen} 个 · 正确率 ${st.accuracy}%</div>
+          <div class="hero-sub">已学 ${st.seen} 个 · 正确率 ${st.accuracy}% · 词库 ${WORDS.length} 词</div>
           <div class="pill">🗂 ${TOPICS.length} 个主题</div>
         </div>
       </section>
@@ -1545,26 +1714,53 @@
     return days <= 1 ? '昨天' : days + ' 天前';
   }
 
+  function cleanArticles(items) {
+    const seen = new Set();
+    const out = [];
+    (items || []).forEach((it) => {
+      if (!it || !it.title || !it.url) return;
+      const blob = it.title + ' ' + (it.summary || '') + ' ' + it.url;
+      if (JUNK_RE.test(blob)) return;
+      const key = String(it.url).split('?')[0].toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      out.push(it);
+    });
+    return out;
+  }
+
   function fetchNews(manual) {
     if (newsBusy) return;
     if (!window.fetch) return;
     newsBusy = true;
-    fetch(NEWS_URL + '?t=' + Date.now(), { cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-      .then((j) => {
-        const items = Array.isArray(j && j.items) ? j.items : [];
-        if (!items.length) throw new Error('empty');
-        S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items };
-        save();
-        newsBusy = false;
-        render();
-        if (manual) toast('已更新 ' + items.length + ' 篇');
-      })
-      .catch(() => {
-        newsBusy = false;
-        render();
-        if (manual) toast('外刊更新失败，稍后再试');
-      });
+    let pending = NEWS_URLS.length;
+    let done = false;
+    NEWS_URLS.forEach((url) => {
+      const loader = (typeof fetchTimeout === 'function')
+        ? fetchTimeout(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), 8000, { cache: 'no-store' })
+        : fetch(url + '?t=' + Date.now(), { cache: 'no-store' });
+      loader
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+        .then((j) => {
+          if (done) return;
+          const items = cleanArticles(j && j.items);
+          if (!items.length) throw new Error('empty');
+          done = true;
+          newsBusy = false;
+          S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items: items };
+          save();
+          render();
+          if (manual) toast('已更新 ' + items.length + ' 篇');
+        })
+        .catch(() => {
+          pending -= 1;
+          if (!done && pending <= 0) {
+            newsBusy = false;
+            render();
+            if (manual) toast('外刊更新失败，稍后再试');
+          }
+        });
+    });
   }
 
   function newsCard(it) {
@@ -2157,6 +2353,8 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         <button class="seg-item ${S.settings.onlineAudio ? 'active' : ''}" data-act="set-audio:1">联网补全</button>
       </div>
       <p class="small muted">720 个精编词自带真人录音，离线可听。其余 8500+ 词若开启「联网补全」，会从公开发音接口取音频；关掉就用系统语音合成。</p>
+      <h3>每天复习上限</h3>
+      ${stepper('review', S.settings.dailyReview || 40, 10, 200, 10, '个到期词 / 天')}
       <h3>每天新词</h3>
       ${stepper('new', S.settings.dailyNew, 5, 200, 5, '个新词 / 天')}
       ${seg('new', [5, 10, 15, 20, 30], S.settings.dailyNew, '')}
@@ -2215,6 +2413,60 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     }
   }
 
+  function weekErrors() {
+    const from = addDays(today(), -6);
+    return (S.errorLog || []).filter((e) => e && e.day >= from);
+  }
+
+  function weakReport() {
+    const by = { spell: 0, meaning: 0, recognition: 0 };
+    const per = {};
+    weekErrors().forEach((e) => {
+      if (!by[e.kind] && by[e.kind] !== 0) return;
+      by[e.kind] += 1;
+      if (!per[e.w]) per[e.w] = { w: e.w, spell: 0, meaning: 0, recognition: 0, n: 0 };
+      per[e.w][e.kind] += 1;
+      per[e.w].n += 1;
+    });
+    const list = Object.keys(per).map((w) => per[w]).sort((a, b) => b.n - a.n || a.w.localeCompare(b.w));
+    return { by, list };
+  }
+
+  function queueWeak() {
+    const list = weakReport().list.filter((x) => x.n >= 2);
+    list.forEach((item) => {
+      const rec = ensureRec(item.w);
+      rec.due = today();
+      rec.wdue = today();
+      rec.weak = true;
+    });
+    save();
+    toast(list.length ? '已把 ' + list.length + ' 个薄弱词排进今天' : '这周还没有重复出错的词');
+    render();
+  }
+
+  function weakScreen() {
+    const rep = weakReport();
+    const labels = { spell: '拼写', meaning: '词义', recognition: '再认' };
+    const rows = rep.list.slice(0, 30).map((x) => {
+      const w = WORD_MAP.get(x.w) || { zh: '', pos: '' };
+      const kind = x.spell >= x.meaning && x.spell >= x.recognition ? '拼写' : x.meaning >= x.recognition ? '词义' : '再认';
+      return `<div class="list-item"><div><div class="lw">${esc(x.w)}</div><div class="lz">${esc(w.pos || '')} ${esc(w.zh || '')}</div></div><div class="lt">${kind} · ${x.n} 次</div></div>`;
+    }).join('');
+    return `<div class="screen">
+      <h1>本周薄弱</h1>
+      <p class="small muted">按出错方式分开记：拼写、词义、再认。同一词本周错到 2 次，会自动排进今天的复习。</p>
+      <div class="chips">
+        <div class="chip"><b>${rep.by.spell}</b><span>${labels.spell}</span></div>
+        <div class="chip"><b>${rep.by.meaning}</b><span>${labels.meaning}</span></div>
+        <div class="chip"><b>${rep.by.recognition}</b><span>${labels.recognition}</span></div>
+      </div>
+      ${rows ? `<section class="card"><div class="list">${rows}</div></section>` : '<p class="small muted">这 7 天还没有记下来的错误。</p>'}
+      <button class="btn primary" data-act="queue-weak">把重复出错的词加入今天</button>
+      <button class="btn ghost" data-act="back">返回</button>
+    </div>`;
+  }
+
   function wrongScreen() {
     const st = stats();
     const due = st.wrongDue;
@@ -2228,7 +2480,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     }
     return `<div class="screen">
       <h1>错词本</h1>
-      <p class="small muted">答对往后推一档，答错回到第 1 天。每次最多 ${WRONG_BATCH} 个，轮流过一遍，不会总是同一批。</p>
+      <p class="small muted">和普通复习共用同一套记忆状态。答错明天再出现，答对按 FSRS 往后排。每次最多 ${WRONG_BATCH} 个，轮流过一遍。</p>
       <div class="chips">
         <div class="chip"><b>${due}</b><span>今天到期</span></div>
         <div class="chip"><b>${total}</b><span>错词总数</span></div>
@@ -2292,6 +2544,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('wtop:') === 0) return wtopicScreen(Number(S.ui.screen.slice(5)));
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) return wordsScreen(S.ui.screen.slice(6));
     if (S.ui.screen === 'wrong') return wrongScreen();
+    if (S.ui.screen === 'weak') return weakScreen();
     if (S.ui.tab === 'study') return studyScreen();
     if (S.ui.tab === 'quiz') return quizScreen();
     if (S.ui.tab === 'news') {
@@ -2331,7 +2584,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     document.getElementById('tabbar').innerHTML = focus ? '' : tabbarHTML();
     if (S.quiz && !S.quiz.done && !S.quiz.answered) {
       const it = S.quiz.items[S.quiz.pos];
-      if (it && it.kind === 'listen') say(it.w);
+      if (it && (it.kind === 'listen' || it.kind === 'type-listen')) say(it.w);
     }
     tickMock();
     const savedOk = save();
@@ -2510,6 +2763,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       case 'quiz':
         if (arg === 'start') startQuiz(parts[2]);
         else if (arg === 'answer') answerQuiz(Number(parts[2]));
+        else if (arg === 'typed') answerTyped();
         else if (arg === 'next') nextQuestion();
         else if (arg === 'again') {
           S.quiz = null;
@@ -2522,6 +2776,9 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         break;
       case 'wrong-quiz-all':
         startQuiz('wrong-all');
+        break;
+      case 'queue-weak':
+        queueWeak();
         break;
       case 'open':
         S.ui.screen = arg;
@@ -2540,6 +2797,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         const dir = Number(parts[2]) || 0;
         if (arg === 'new') S.settings.dailyNew = Math.max(5, Math.min(200, (S.settings.dailyNew || 15) + dir));
         if (arg === 'goal') S.settings.dailyGoal = Math.max(10, Math.min(300, (S.settings.dailyGoal || 20) + dir));
+        if (arg === 'review') S.settings.dailyReview = Math.max(10, Math.min(200, (S.settings.dailyReview || 40) + dir));
         save();
         render();
         break;

@@ -1,3 +1,4 @@
+# 真正会跑的是 .github/workflows/articles.yml。这个文件留着给本机对照。
 name: 每日外刊
 
 on:
@@ -38,6 +39,10 @@ jobs:
           zh = sum(1 for i in items if i.get('title_zh'))
           print(f"已翻译标题 {zh}/{len(items)}")
           assert all(i.get('url') and i.get('title') for i in items), "缺 url/title"
+          import re
+          junk = re.compile(r"sudoku|crossword|cross-word|wordle|\bpuzzle\b", re.I)
+          bad = [i["title"] for i in items if junk.search((i.get("title") or "") + " " + (i.get("summary") or ""))]
+          assert not bad, "混进了谜题: " + "; ".join(bad)
           if zh < 10:
               print("::warning::部分条目未翻译，检查翻译端点")
           EOF
