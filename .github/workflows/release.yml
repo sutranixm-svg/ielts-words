@@ -108,7 +108,11 @@ jobs:
           set -euo pipefail
           APK="build/ielts-vocab-${{ steps.ver.outputs.version }}.apk"
           EXPECTED="4A:DF:68:0B:A5:59:E1:AA:B0:79:17:0A:0E:95:5E:62:93:DC:EA:73:DE:B9:A2:60:0D:84:F5:9B:26:03:E9:AA"
-          GOT=$(apksigner verify --print-certs "$APK" | sed -n 's/.*SHA-256 digest: //p' | head -1 | tr 'a-f' 'A-F')
+          # apksigner may print the digest with or without colons.
+          norm() { printf '%s' "$1" | tr -d ': ' | tr 'a-f' 'A-F'; }
+          GOT=$(apksigner verify --print-certs "$APK" | sed -n 's/.*SHA-256 digest: //p' | head -1)
+          GOT=$(norm "$GOT")
+          EXPECTED=$(norm "$EXPECTED")
           echo "cert SHA-256: $GOT"
           if [ "$GOT" != "$EXPECTED" ]; then
             echo "::error::签名证书不是发布证书"
