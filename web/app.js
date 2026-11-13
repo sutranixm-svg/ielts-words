@@ -5,7 +5,10 @@
   const TOPICS = window.TOPICS || [];
   const WORD_MAP = new Map(WORDS.map((w) => [w.w, w]));
   const TOPIC_MAP = new Map(TOPICS.map((t) => [t.id, t]));
-  const KEY = 'ielts.vocab.v1';
+  const KEY_V1 = 'ielts.vocab.v1';
+  const KEY = 'ielts.vocab.v2';
+  const BACKUP_KEY = 'ielts.vocab.backups';
+  const SCHEMA = 2;
   const INTERVALS = [1, 2, 4, 8, 16, 32];
   const MASTER_BOX = 4;
   const WEEKDAYS = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'];
@@ -17,18 +20,26 @@
   const RELEASES_API = 'https://api.github.com/repos/' + REPO + '/releases/latest';
   const APP_VERSION = (window.App && window.App.version && window.App.version()) || '0';
   const NEWS_URL = 'https://raw.githubusercontent.com/' + REPO + '/main/data/articles.json';
-  // 更新检查优先走国内可达的镜像，最后才回落到 GitHub API
+  // 版本清单和安装包都只走 https。文件名按版本号拼，不使用 assets[0]。
   /** 按版本号拼出各镜像上的安装包地址。 */
   function mirrorUrls(ver) {
     if (!ver) return [];
     const f = 'ielts-vocab-' + ver + '.apk';
-    const gh = 'https://github.com/sutranixm-svg/ielts-words/raw/dist/' + f;
+    const release = 'https://github.com/' + REPO + '/releases/download/v' + ver + '/' + f;
+    const gh = 'https://github.com/' + REPO + '/raw/dist/' + f;
     return [
+      release,
+      'https://ghfast.top/' + release,
       'https://ghfast.top/' + gh,
-      'https://gh-proxy.com/' + gh,
-      'https://gcore.jsdelivr.net/gh/sutranixm-svg/ielts-words@dist/' + f,
+      'https://gcore.jsdelivr.net/gh/' + REPO + '@dist/' + f,
     ];
   }
+  const DIST_URLS = [
+    'https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://ghfast.top/https://raw.githubusercontent.com/' + REPO + '/dist/version.json',
+    'https://cdn.jsdelivr.net/gh/' + REPO + '@dist/version.json',
+    'https://gcore.jsdelivr.net/gh/' + REPO + '@dist/version.json',
+  ];
   const NEWS_TTL = 6 * 3600 * 1000;
   const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
 
@@ -79,10 +90,20 @@
 
   function fresh() {
     return {
-      v: 1,
+      schema: SCHEMA,
       words: {},
       days: {},
-      settings: { dailyNew: 15, dailyGoal: 20, examDate: '', onlineAudio: true, decks: TOPICS.map((t) => t.id) },
+      settings: {
+        dailyNew: 15,
+        dailyGoal: 20,
+        dailyReview: 40,
+        examDate: '',
+        onlineAudio: true,
+        decks: TOPICS.map((t) => t.id),
+        theme: 'dark',
+        nickname: '',
+        onboarded: false,
+      },
       session: null,
       quiz: null,
       lastSession: null,
@@ -94,26 +115,50 @@
     };
   }
 
-  function normalize(raw) {
+  function migrate(raw) {
     const base = fresh();
     const o = raw && typeof raw === 'object' ? raw : {};
+    const settings = { ...base.settings, ...(o.settings || {}) };
+    if (!Array.isArray(settings.decks)) settings.decks = base.settings.decks;
     return {
       ...base,
       ...o,
-      v: 1,
+      schema: SCHEMA,
       words: o.words && typeof o.words === 'object' ? o.words : {},
       days: o.days && typeof o.days === 'object' ? o.days : {},
-      settings: { ...base.settings, ...(o.settings || {}) },
+      settings,
       news: o.news && Array.isArray(o.news.items) ? o.news : base.news,
-      ui: { ...base.ui, ...(o.ui || {}) },
+      writing: o.writing && typeof o.writing === 'object' ? o.writing : {},
+      ui: { ...base.ui, ...(o.ui || {}), confirm: null },
     };
   }
 
+  function readStore(key) {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    return JSON.parse(raw);
+  }
+
+  let loadError = '';
+  let saveError = '';
+  let saveWarned = false;
+
   let S = (function load() {
     try {
-      const raw = localStorage.getItem(KEY);
-      if (raw) return normalize(JSON.parse(raw));
-    } catch (e) {}
+      const v2 = readStore(KEY);
+      if (v2) return migrate(v2);
+    } catch (e) {
+      loadError = '当前进度读不出来（' + ((e && e.message) || e) + '）';
+    }
+    try {
+      const v1 = readStore(KEY_V1);
+      if (v1) {
+        if (loadError) loadError = '已改用上一份进度。' + loadError;
+        return migrate(v1);
+      }
+    } catch (e) {
+      loadError = loadError || ('旧进度读不出来（' + ((e && e.message) || e) + '）');
+    }
     return fresh();
   })();
 
@@ -123,7 +168,89 @@
   function save() {
     try {
       localStorage.setItem(KEY, JSON.stringify(S));
-    } catch (e) {}
+      saveError = '';
+      saveWarned = false;
+      return true;
+    } catch (e) {
+      saveError = (e && e.message) ? e.message : '无法写入本地存储';
+      if (!saveWarned) {
+        saveWarned = true;
+        toast('保存失败：' + saveError);
+      }
+      return false;
+    }
+  }
+
+  function readBackups() {
+    try {
+      const list = JSON.parse(localStorage.getItem(BACKUP_KEY) || '[]');
+      return Array.isArray(list) ? list : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  function exportable(state) {
+    const copy = JSON.parse(JSON.stringify(state || S));
+    delete copy.ui;
+    delete copy.session;
+    delete copy.quiz;
+    return copy;
+  }
+
+  function exportPayload() {
+    return JSON.stringify({
+      app: 'ielts-words',
+      schema: SCHEMA,
+      exported: new Date().toISOString(),
+      state: exportable(S),
+    });
+  }
+
+  function snapshotToday(force) {
+    const day = today();
+    let list = readBackups();
+    const idx = list.findIndex((b) => b && b.day === day);
+    if (idx >= 0 && !force) return;
+    const entry = { day, at: new Date().toISOString(), state: exportable(S) };
+    if (idx >= 0) list.splice(idx, 1);
+    list.unshift(entry);
+    list = list.slice(0, 7);
+    try {
+      localStorage.setItem(BACKUP_KEY, JSON.stringify(list));
+    } catch (e) {
+      saveError = '备份失败：' + ((e && e.message) || e);
+      if (!saveWarned) {
+        saveWarned = true;
+        toast(saveError);
+      }
+    }
+  }
+
+  function importState(obj) {
+    const state = obj && obj.state && typeof obj.state === 'object' ? obj.state : obj;
+    if (!state || typeof state !== 'object' || !state.words || typeof state.words !== 'object') {
+      throw new Error('不是有效的备份文件');
+    }
+    snapshotToday(true);
+    S = migrate(state);
+    if (S.session && S.session.day && S.session.day !== dayStr()) S.session = null;
+    save();
+    render();
+  }
+
+  function restoreBackup(day) {
+    const list = readBackups();
+    const hit = list.find((b) => b && b.day === day);
+    if (!hit || !hit.state) {
+      toast('找不到这份备份');
+      return;
+    }
+    S = migrate(hit.state);
+    if (S.session && S.session.day && S.session.day !== dayStr()) S.session = null;
+    save();
+    render();
+    toast('已恢复 ' + day + ' 的备份');
   }
 
   function today() {
@@ -670,47 +797,224 @@
     return 0;
   }
 
-  /** 版本号只信 GitHub API（它不缓存），下载地址按版本号拼到镜像上。 */
-  function fetchVersion() {
-    return fetch(RELEASES_API, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-      .then((j) => {
-        const tag = j && j.tag_name ? j.tag_name : '';
-        const ver = String(tag).replace(/^v/i, '');
-        const urls = mirrorUrls(ver);
-        if (j && j.assets && j.assets.length) urls.push(j.assets[0].browser_download_url);
-        return { tag, size: ((j && j.assets) || [{}])[0].size || 0, urls };
-      })
-      .catch(function () {
-        // API 不通时退回可变清单（可能滞后，只作兜底）
-        return fetch('https://ghfast.top/https://raw.githubusercontent.com/' + REPO
-          + '/dist/version.json?t=' + Date.now(), { cache: 'no-store' })
-          .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
-          .then((j) => ({
-            tag: 'v' + String(j.version || ''),
-            size: j.size || 0,
-            urls: (j.urls || []).slice(),
-          }));
+  let FETCH_MS = 5000;
+
+  function fetchTimeout(url, ms, opts) {
+    const AC = (typeof AbortController !== 'undefined') ? AbortController : null;
+    const limit = ms || FETCH_MS;
+    if (!AC) {
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => reject(new Error('timeout')), limit);
+        fetch(url, opts || {}).then((r) => { clearTimeout(t); resolve(r); }, (e) => { clearTimeout(t); reject(e); });
       });
+    }
+    const ctrl = new AC();
+    const timer = setTimeout(() => ctrl.abort(), limit);
+    const opt = Object.assign({ cache: 'no-store' }, opts || {}, { signal: ctrl.signal });
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (err) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        reject(err);
+      };
+      const ok = (val) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(val);
+      };
+      if (ctrl.signal.addEventListener) ctrl.signal.addEventListener('abort', () => fail(new Error('timeout')));
+      fetch(url, opt).then(ok, (e) => fail(ctrl.signal.aborted ? new Error('timeout') : e));
+    });
+  }
+
+  function httpsOnly(list) {
+    const out = [];
+    (list || []).forEach((u) => {
+      if (typeof u === 'string' && u.indexOf('https://') === 0 && out.indexOf(u) < 0) out.push(u);
+    });
+    return out;
+  }
+
+  /** 按文件名挑安装包，不用 assets[0]。对不上名字就当这个 Release 没有包。 */
+  function pickAsset(assets, ver) {
+    const want = 'ielts-vocab-' + ver + '.apk';
+    const list = Array.isArray(assets) ? assets : [];
+    for (let i = 0; i < list.length; i += 1) {
+      if (list[i] && list[i].name === want) return list[i];
+    }
+    return null;
+  }
+
+  function sha256Hex(input) {
+    const K = new Uint32Array([
+      0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+      0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+      0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+      0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+      0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+      0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+      0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+      0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    ]);
+    const rotr = (x, n) => (x >>> n) | (x << (32 - n));
+    let bytes;
+    if (typeof input === 'string') {
+      const utf = unescape(encodeURIComponent(input));
+      bytes = new Uint8Array(utf.length);
+      for (let i = 0; i < utf.length; i += 1) bytes[i] = utf.charCodeAt(i);
+    } else {
+      bytes = input instanceof Uint8Array ? input : new Uint8Array(input || []);
+    }
+    const bitLen = bytes.length * 8;
+    const withPad = new Uint8Array((((bytes.length + 9 + 63) >> 6) << 6));
+    withPad.set(bytes);
+    withPad[bytes.length] = 0x80;
+    const view = new DataView(withPad.buffer);
+    const hi = Math.floor(bitLen / 0x100000000);
+    view.setUint32(withPad.length - 8, hi, false);
+    view.setUint32(withPad.length - 4, bitLen >>> 0, false);
+    let h0 = 0x6a09e667; let h1 = 0xbb67ae85; let h2 = 0x3c6ef372; let h3 = 0xa54ff53a;
+    let h4 = 0x510e527f; let h5 = 0x9b05688c; let h6 = 0x1f83d9ab; let h7 = 0x5be0cd19;
+    const w = new Uint32Array(64);
+    for (let i = 0; i < withPad.length; i += 64) {
+      for (let j = 0; j < 16; j += 1) w[j] = view.getUint32(i + j * 4, false);
+      for (let j = 16; j < 64; j += 1) {
+        const s0 = rotr(w[j - 15], 7) ^ rotr(w[j - 15], 18) ^ (w[j - 15] >>> 3);
+        const s1 = rotr(w[j - 2], 17) ^ rotr(w[j - 2], 19) ^ (w[j - 2] >>> 10);
+        w[j] = (w[j - 16] + s0 + w[j - 7] + s1) >>> 0;
+      }
+      let a = h0; let b = h1; let c = h2; let d = h3; let e = h4; let f = h5; let g = h6; let h = h7;
+      for (let j = 0; j < 64; j += 1) {
+        const S1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+        const ch = (e & f) ^ (~e & g);
+        const t1 = (h + S1 + ch + K[j] + w[j]) >>> 0;
+        const S0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+        const maj = (a & b) ^ (a & c) ^ (b & c);
+        const t2 = (S0 + maj) >>> 0;
+        h = g; g = f; f = e; e = (d + t1) >>> 0; d = c; c = b; b = a; a = (t1 + t2) >>> 0;
+      }
+      h0 = (h0 + a) >>> 0; h1 = (h1 + b) >>> 0; h2 = (h2 + c) >>> 0; h3 = (h3 + d) >>> 0;
+      h4 = (h4 + e) >>> 0; h5 = (h5 + f) >>> 0; h6 = (h6 + g) >>> 0; h7 = (h7 + h) >>> 0;
+    }
+    return [h0, h1, h2, h3, h4, h5, h6, h7].map((x) => x.toString(16).padStart(8, '0')).join('');
+  }
+
+  /** expected 为空时不拦（没有摘要就只能靠 ZIP 魔数和长度）。对不上返回 false。 */
+  function acceptHash(input, expected) {
+    const exp = String(expected || '').replace(/^sha256:/i, '').trim().toLowerCase();
+    if (!exp) return true;
+    return sha256Hex(input) === exp;
+  }
+
+  function shaOf(asset) {
+    const d = asset && (asset.digest || asset.sha256) ? String(asset.digest || asset.sha256) : '';
+    return d.replace(/^sha256:/i, '').trim();
+  }
+
+  function candidateFromApi(j) {
+    if (!j || !j.tag_name) return null;
+    const version = String(j.tag_name).replace(/^v/i, '');
+    if (!version) return null;
+    const asset = pickAsset(j.assets, version);
+    const urls = mirrorUrls(version);
+    if (asset && typeof asset.browser_download_url === 'string' && asset.browser_download_url.indexOf('https://') === 0
+      && urls.indexOf(asset.browser_download_url) < 0) {
+      urls.push(asset.browser_download_url);
+    }
+    return {
+      version,
+      tag: 'v' + version,
+      size: asset && asset.size ? asset.size : 0,
+      sha256: shaOf(asset),
+      urls: httpsOnly(urls),
+      versionCode: 0,
+      source: 'release',
+    };
+  }
+
+  function candidateFromDist(j) {
+    if (!j || !j.version) return null;
+    const version = String(j.version).replace(/^v/i, '');
+    if (!version) return null;
+    const urls = httpsOnly(j.urls).concat(mirrorUrls(version));
+    return {
+      version,
+      tag: 'v' + version,
+      size: j.size || 0,
+      sha256: String(j.sha256 || '').replace(/^sha256:/i, '').trim(),
+      urls: httpsOnly(urls),
+      versionCode: j.versionCode || 0,
+      source: 'dist',
+    };
+  }
+
+  function mergeSame(a, b) {
+    return {
+      version: a.version,
+      tag: a.tag,
+      size: a.size || b.size || 0,
+      sha256: a.sha256 || b.sha256 || '',
+      urls: httpsOnly((a.urls || []).concat(b.urls || [])),
+      versionCode: a.versionCode || b.versionCode || 0,
+      source: (a.sha256 ? a.source : (b.sha256 ? b.source : a.source)),
+    };
+  }
+
+  function betterPair(a, b) {
+    if (!a || !a.version) return b || null;
+    if (!b || !b.version) return a;
+    const c = cmpVersion(a.version, b.version);
+    if (c > 0) return a;
+    if (c < 0) return b;
+    return mergeSame(a, b);
+  }
+
+  function chooseUpdate(apiJson, distJson) {
+    return betterPair(candidateFromApi(apiJson), candidateFromDist(distJson));
+  }
+
+  /** Release 和 dist/version.json 并行拉，取版本更高的那份。单路失败不影响另一路。 */
+  function fetchVersion() {
+    const apiP = fetchTimeout(RELEASES_API, FETCH_MS, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => candidateFromApi(j))
+      .catch(() => null);
+    const distP = Promise.all(DIST_URLS.map((u) => fetchTimeout(u + (u.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), FETCH_MS, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
+      .then((j) => candidateFromDist(j))
+      .catch(() => null))).then((list) => list.reduce((best, c) => betterPair(best, c), null));
+    return Promise.all([apiP, distP]).then(([api, dist]) => {
+      const chosen = betterPair(api, dist);
+      if (!chosen || !chosen.version || !chosen.urls || !chosen.urls.length) throw new Error('no urls');
+      return chosen;
+    });
   }
 
   function checkUpdate(manual) {
     if (!window.fetch) return;
     fetchVersion()
       .then((j) => {
-        const tag = j.tag || '';
-        const urls = (j.urls || []).filter(Boolean);
-        if (!tag || !urls.length) throw new Error('no urls');
-        if (cmpVersion(tag, APP_VERSION) <= 0) {
+        const ver = j.version;
+        const urls = httpsOnly(j.urls);
+        if (!ver || !urls.length) throw new Error('no urls');
+        if (cmpVersion(ver, APP_VERSION) <= 0) {
           S.update = null;
           save();
           render();
           if (manual) toast('已是最新版本 v' + APP_VERSION);
           return;
         }
-        const ver = String(tag).replace(/^v/i, '');
-        S.update = { version: ver, urls, url: urls[0], size: j.size };
-        if (S.seenUpdate === ver) S.seenUpdate = '';
+        S.update = {
+          version: ver,
+          urls,
+          url: urls[0],
+          size: j.size || 0,
+          sha256: j.sha256 || '',
+          versionCode: j.versionCode || 0,
+        };
         save();
         render();
         if (manual) toast('发现新版本 v' + ver);
@@ -1860,12 +2164,55 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       ${stepper('goal', S.settings.dailyGoal, 10, 300, 10, '张卡片 / 天')}
       ${seg('goal', [10, 20, 30, 50], S.settings.dailyGoal, '')}
       <p class="small muted">学完当天配额后，首页还能点「加练」继续学新词，不受配额限制。调整当天即时生效。</p>
+      <h3>备份</h3>
+      <p class="small muted">学习记录只在这台设备上。可以导出 JSON，或从下面每天自动留下的备份里恢复（保留最近 7 天）。</p>
+      ${loadError || saveError ? `<p class="small" style="color:var(--bad)">${esc(loadError || saveError)}</p>` : ''}
+      <div class="row2">
+        <button class="btn ghost sm" data-act="export">导出 JSON</button>
+        <button class="btn ghost sm" data-act="import">导入 JSON</button>
+      </div>
+      <input id="importFile" type="file" accept="application/json,.json" hidden>
+      <section class="card"><div class="list">${backupRows()}</div></section>
       <button class="btn danger" data-act="ask-reset">重置学习进度</button>
       <button class="btn ghost" data-act="back">返回</button>
       ${lastAudioErr ? `<p class="small muted center">上次发音错误：${esc(lastAudioErr)}</p>` : ''}
       <button class="btn ghost" data-act="check-update">检查更新</button>
       <p class="small muted center">${WORDS.length} 词 · ${TOPICS.length} 个主题 · v${esc(APP_VERSION)}</p>
     </div>`;
+  }
+
+  function saveBanner() {
+    const msg = saveError || loadError;
+    if (!msg) return '';
+    return `<section class="update-bar save-banner"><div class="ub-body"><b>数据没有保存好</b><span>${esc(msg)}</span></div></section>`;
+  }
+
+  function backupRows() {
+    const list = readBackups();
+    if (!list.length) return '<p class="small muted">还没有每日备份。打开应用时会自动留一份，最多保留 7 天。</p>';
+    return list.map((b) => `<div class="list-item"><div><div class="lw">${esc(b.day || '')}</div><div class="lz">${esc(b.at || '')}</div></div><button class="btn ghost xs" data-act="restore:${esc(b.day || '')}">恢复</button></div>`).join('');
+  }
+
+  function exportState() {
+    const payload = exportPayload();
+    const name = 'ielts-vocab-backup.json';
+    try {
+      if (window.App && window.App.saveText) window.App.saveText(name, payload);
+      if (window.App && window.App.shareText) {
+        window.App.shareText(name, payload);
+        return;
+      }
+      const blob = new Blob([payload], { type: 'application/json' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = name;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      toast('已开始下载备份');
+    } catch (e) {
+      toast('导出失败：' + ((e && e.message) || e));
+    }
   }
 
   function wrongScreen() {
@@ -1980,14 +2327,15 @@ Some caution is warranted. Much of the research uses small samples, and effects 
       (S.ui.tab === 'study' && S.session && !S.session.done) ||
       (S.ui.tab === 'quiz' && S.quiz && !S.quiz.done);
     view.className = 'view' + (focus ? ' no-tabs' : '');
-    view.innerHTML = screenHTML() + modalHTML();
+    view.innerHTML = saveBanner() + screenHTML() + modalHTML();
     document.getElementById('tabbar').innerHTML = focus ? '' : tabbarHTML();
     if (S.quiz && !S.quiz.done && !S.quiz.answered) {
       const it = S.quiz.items[S.quiz.pos];
       if (it && it.kind === 'listen') say(it.w);
     }
     tickMock();
-    save();
+    const savedOk = save();
+    if (!savedOk && !view.querySelector('.save-banner')) view.insertAdjacentHTML('afterbegin', saveBanner());
   }
 
   /* ---------- 交互 ---------- */
@@ -2222,11 +2570,24 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         }
         break;
       }
+      case 'export':
+        exportState();
+        break;
+      case 'import': {
+        const input = document.getElementById('importFile');
+        if (input) input.click();
+        break;
+      }
+      case 'restore':
+        restoreBackup(parts.slice(1).join(':'));
+        break;
       case 'update':
         if (S.update && window.App && window.App.installUpdate) {
           updateState = 'downloading';
           render();
-          window.App.installUpdate((S.update.urls || [S.update.url]).join('\n'));
+          const lines = httpsOnly(S.update.urls || [S.update.url]);
+          if (S.update.sha256) lines.push('sha256:' + String(S.update.sha256).replace(/^sha256:/i, ''));
+          window.App.installUpdate(lines.join('\n'));
         } else {
           toast('请在浏览器打开 GitHub 页面下载');
         }
@@ -2299,7 +2660,25 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     }
   });
 
+  document.addEventListener('change', (e) => {
+    if (!e.target || e.target.id !== 'importFile' || !e.target.files || !e.target.files[0]) return;
+    const file = e.target.files[0];
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        importState(JSON.parse(String(reader.result || '')));
+        toast('已导入备份');
+      } catch (err) {
+        toast('导入失败：' + ((err && err.message) || err));
+      }
+    };
+    reader.onerror = () => toast('读取文件失败');
+    reader.readAsText(file);
+    e.target.value = '';
+  });
+
   window.addEventListener('load', render);
+  try { snapshotToday(false); } catch (e) { /* 备份失败已经在 snapshotToday 里提示 */ }
   render();
   setTimeout(function () { checkUpdate(false); }, 1500);
   setTimeout(function () { if (newsAge() > NEWS_TTL) fetchNews(false); }, 3500);
@@ -2330,5 +2709,16 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     stats,
     buildQueue,
     startQuiz,
+    save,
+    saveError: () => saveError || loadError,
+    exportPayload,
+    importState,
+    backups: readBackups,
+    restoreBackup,
+    sha256: sha256Hex,
+    acceptHash,
+    chooseUpdate,
+    pickAsset,
+    setFetchMs: (n) => { FETCH_MS = n; },
   };
 })();

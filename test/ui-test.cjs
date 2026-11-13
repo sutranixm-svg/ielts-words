@@ -90,7 +90,8 @@ setTimeout(() => {
     assert(text().includes('确认重置'), 'reset confirm opens');
     click('[data-act="cancel"]');
 
-    const saved = JSON.parse(window.localStorage.getItem('ielts.vocab.v1'));
+    const saved = JSON.parse(window.localStorage.getItem('ielts.vocab.v2'));
+    assert(saved && saved.schema === 2, 'progress stored as schema 2');
     assert(saved && saved.settings.dailyNew === 20, 'localStorage persisted');
 
     assert(errors.length === 0, 'no runtime errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
