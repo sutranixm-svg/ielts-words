@@ -4,7 +4,7 @@
 
 ## 已补上
 
-- 拼写变体音标（英美拼写指向已有音标）：4
+- 拼写变体和连字符音标（指向词表里已有的音标）：6
 - 规则复数音标（词根音标 + /s/、/z/ 或 /ɪz/）：182
 - 从精编例句里抽出的搭配：562 个词
 - 易混词：词表里同时存在的固定对照，以及英美拼写对照
@@ -12,11 +12,13 @@
 ### 拼写变体
 
 - wellbeing ← well-being
+- co-operation ← cooperation
 - cosy ← cozy
 - distil ← distill
 - theatre ← theater
+- thousand-fold ← thousandfold
 
-## 仍然没有音标（150）
+## 仍然没有音标（148）
 
 这些词在词表里没有可对照的词根或拼写变体，脚本没有猜。
 
@@ -42,7 +44,6 @@
 - `brothers`（ielts）
 - `cd`（ielts）
 - `cheaper`（ielts）
-- `co-operation`（ielts）
 - `cometary`（toefl）
 - `committed`（toefl）
 - `competing`（toefl）
@@ -153,7 +154,6 @@
 - `superficially`（toefl）
 - `supremely`（toefl）
 - `textured`（toefl）
-- `thousand-fold`（toefl）
 - `tones`（ielts）
 - `toys`（ielts）
 - `traditionally`（toefl）
@@ -171,22 +171,9 @@
 - `westerner`（ielts）
 - `words`（ielts）
 
-## 音标字符串已损坏（12）
+## 音标字符串已损坏（0）
 
-原字段里有多余的反斜杠，无法可靠还原元音，所以保留原样。
-
-- `drought` [dɹʌʊt]
-- `propaganda` [ˌpɹɒp.ə.ˈɡæn.də]
-- `dismissal` [dɪsˈmɪsəɫ]
-- `conversely` /ˈkɔnv\\\\ːsli/
-- `converter` /kənˈv\\\\ːtə(r)/
-- `discernible` /diˈs\\\\ːnəbl,-ˈz\\\\ː-/
-- `discerning` /diˈs\\\\ːniŋ/
-- `first-aid` /ˈf\\\\ːstˈeid/
-- `herder` /ˈh\\\\ːdə(r)/
-- `hummingbird` /ˈhʌmiŋb\\\\ːd/
-- `journalistic` /,dʒ\\\\ːnəˈlistik/
-- `per capita` /p\\\\ːˈkæpitə/
+没有残留的坏音标。原先 `ɜ` 被写成反斜杠的条目，以及 3 条方括号音标，已经按原字符串里的辅音还原，没有新猜元音。
 
 ## 没有例句也没有英文释义（38）
 

@@ -39,7 +39,7 @@ jobs:
           print(f"已翻译标题 {zh}/{len(items)}")
           assert all(i.get('url') and i.get('title') for i in items), "缺 url/title"
           import re
-          junk = re.compile(r"sudoku|crossword|cross-word|wordle|\bpuzzle\b", re.I)
+          junk = re.compile(r"sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword|black\s*friday|cyber\s*monday|\bhoroscope\b|spoiler alert", re.I)
           bad = [i["title"] for i in items if junk.search((i.get("title") or "") + " " + (i.get("summary") or ""))]
           assert not bad, "混进了谜题: " + "; ".join(bad)
           if zh < 10:

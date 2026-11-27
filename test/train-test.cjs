@@ -69,19 +69,21 @@ setTimeout(() => {
     doc.body.insertAdjacentHTML('beforeend', '<button id="tsay" data-act="say:academic">t</button>');
     doc.getElementById('tsay').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
     assert(window.__rec.asset[0] === 'audio/academic.mp3', '有录音走原生 asset 播放：' + window.__rec.asset[0]);
-    // 没有内置录音的词 → 联网真人发音（默认开）
+    // 没有内置录音时默认走系统语音，不把单词发给有道
     doc.body.insertAdjacentHTML('beforeend', '<button id="tsay2" data-act="say:zzzznotaword">t</button>');
     doc.getElementById('tsay2').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    assert((window.__rec.url[0] || '').indexOf('dictvoice') > 0, '无录音时走联网发音');
-    // 关掉联网 → 走系统语音
+    assert(window.__rec.tts[0] === 'zzzznotaword', '默认走系统语音：' + window.__rec.tts[0]);
+    assert((window.__rec.url || []).length === 0, '默认不请求有道');
     click('[data-act="pause"]');
     click('[data-act="tab:library"]');
     click('[data-act="open:settings"]');
-    click('[data-act="set-audio:0"]');
+    assert(text().includes('有道词典'), '设置里说明联网发音会发给有道');
+    click('[data-act="set-audio:1"]');
+    assert(doc.getElementById('toast').textContent.includes('有道'), '打开联网补全时再次说明');
     click('[data-act="back"]');
     doc.body.insertAdjacentHTML('beforeend', '<button id="tsay3" data-act="say:zzzznotaword">t</button>');
     doc.getElementById('tsay3').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-    assert(window.__rec.tts[0] === 'zzzznotaword', '关联网后走系统语音：' + window.__rec.tts[0]);
+    assert((window.__rec.url[0] || '').indexOf('dictvoice') > 0, '打开联网补全后才走有道');
     S().session = null;
 
     /* ---------- 口语 ---------- */
