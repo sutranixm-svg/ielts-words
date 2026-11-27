@@ -2,7 +2,7 @@
 
 版本号以 `android/AndroidManifest.xml` 为准。打 tag 之前先改 `versionName` 和 `versionCode`：`versionName` 必须等于 tag（去掉前缀 `v`），`versionCode` 必须大于上一个 tag 里的值。
 
-当前仓库版本是 **1.9.4**（`versionCode` 16）。本地如果还有没推上来的 1.9.x 改动，先合进这份清单再打 tag，否则流水线会按 GitHub 上的 manifest 出包。
+当前仓库版本是 **1.9.5**（`versionCode` 17）。本地如果还有没推上来的 1.9.x 改动，先合进这份清单再打 tag，否则流水线会按 GitHub 上的 manifest 出包。
 
 ## 需要的 GitHub Actions secrets
 
@@ -32,8 +32,8 @@
 ```bash
 git checkout main
 git pull
-git tag v1.9.4
-git push origin v1.9.4
+git tag v1.9.5
+git push origin v1.9.5
 ```
 
 流水线会：

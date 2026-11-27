@@ -31,10 +31,16 @@ def to_ipa(p):
     if not p:
         return ''
     s = p.strip()
+    if s.startswith('[') and s.endswith(']'):
+        s = s[1:-1].strip()
     s = s.replace('ә', 'ə').replace("'", 'ˈ').replace(':', 'ː')
     s = s.replace('ɑ', 'ɑ').replace('ɡ', 'g')
     s = s.replace('є', 'e').replace('ɛ', 'e')
+    # ECDICT 里有几条把 ɜ 存成了一串反斜杠，辅音框架还在。
+    s = re.sub(r'\\+ː', 'ɜː', s)
     s = re.sub(r'\s+', '', s)
+    if not s or '\\' in s:
+        return ''
     return '/' + s + '/'
 
 def parse(row):
@@ -67,6 +73,12 @@ def parse(row):
     zh = '，'.join(meanings)
     zh = re.sub(r'[，,]\s*', '；', zh)
     zh = re.sub(r'；+', '；', zh).strip('； ')
+    seen = []
+    for part in zh.split('；'):
+        part = part.strip()
+        if part and part not in seen:
+            seen.append(part)
+    zh = '；'.join(seen)
     if len(zh) > 70:
         zh = zh[:70].rsplit('；', 1)[0]
     if not zh:

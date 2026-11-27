@@ -101,8 +101,16 @@ setTimeout(() => {
     click('[data-act="open:writing"]');
     click('[data-act="wtop:0"]');
     const ta = doc.getElementById('wdraft');
-    ta.value = essay(60);
+    ta.value = 'I think 教育 should be free.';
     ta.dispatchEvent(new window.Event('input', { bubbles: true }));
+    assert(doc.getElementById('wcount').textContent === '5', '英文词数不把汉字算进去：' + doc.getElementById('wcount').textContent);
+    assert(doc.getElementById('zcount').textContent === '2', '汉字单独计数');
+    click('[data-act="back"]');
+    assert(text().includes('英文 5 词') && text().includes('汉字 2'), '话题列表用英文词数而不是字符数');
+    click('[data-act="wtop:0"]');
+    const ta0 = doc.getElementById('wdraft');
+    ta0.value = essay(60);
+    ta0.dispatchEvent(new window.Event('input', { bubbles: true }));
     click('[data-act="wcheck"]');
     let rep = text();
     assert(rep.includes('自查结果'), '出报告');
