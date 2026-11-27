@@ -14,6 +14,26 @@
   });
   const WORD_MAP = new Map(WORDS.map((w) => [w.w, w]));
   const TOPIC_MAP = new Map(TOPICS.map((t) => [t.id, t]));
+  const PATH = window.PATH;
+  const PATH_DATA = (PATH && PATH.DATA) || { awl: [], gk: [], cet4: [], extra: [], senses: {}, missingAwl: [] };
+  const EXTRA_MAP = new Map();
+  (PATH_DATA.extra || []).forEach((w) => {
+    if (w && w.w && !WORD_MAP.has(w.w)) EXTRA_MAP.set(w.w, w);
+  });
+  const SENSES = PATH_DATA.senses || {};
+  const AWL_INDEX = new Map();
+  (PATH_DATA.awl || []).forEach((fam, i) => {
+    if (fam && fam.rep) AWL_INDEX.set(fam.rep, i);
+  });
+  const GK_INDEX = new Map((PATH_DATA.gk || []).map((w, i) => [w, i]));
+  const CET_INDEX = new Map((PATH_DATA.cet4 || []).map((w, i) => [w, i]));
+  const DECK_META = {
+    gk: { id: 'gk', zh: '高中词汇', en: 'ECDICT 高考词表' },
+    awl: { id: 'awl', zh: '学术词表 AWL', en: 'Academic Word List' },
+    cet4: { id: 'cet4', zh: '四级词汇', en: 'ECDICT 四级词表' },
+    listen: { id: 'listen', zh: '听力答案词', en: 'Listening answers' },
+    review: { id: 'review', zh: '复盘生词', en: 'Practice notes' },
+  };
   const KEY_V1 = 'ielts.vocab.v1';
   const KEY = 'ielts.vocab.v2';
   const BACKUP_KEY = 'ielts.vocab.backups';
@@ -59,6 +79,12 @@
   const CAT_LABEL = { tech: '科技', business: '财经', life: '生活', culture: '文娱' };
 
   /* ---------- 基础工具 ---------- */
+
+  function cleanBand(n) {
+    const x = Number(n);
+    if (!isFinite(x) || x < 4 || x > 9) return null;
+    return Math.round(x * 2) / 2;
+  }
 
   const pad = (n) => String(n).padStart(2, '0');
   const dayStr = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
@@ -118,7 +144,16 @@
         theme: 'dark',
         nickname: '',
         onboarded: false,
+        followPath: true,
+        stage: 1,
+        bandL: null,
+        bandR: null,
+        awlOptional: false,
+        stage3Ack: false,
+        studyDepth: 'understand',
       },
+      custom: { listen: [], review: [] },
+      awl: { started: {} },
       session: null,
       quiz: null,
       lastSession: null,
@@ -135,12 +170,26 @@
     const o = raw && typeof raw === 'object' ? raw : {};
     const settings = { ...base.settings, ...(o.settings || {}) };
     if (!Array.isArray(settings.decks)) settings.decks = base.settings.decks;
+    if (!o.settings || o.settings.followPath == null) settings.followPath = false;
+    if (!settings.stage) settings.stage = 1;
+    settings.studyDepth = settings.studyDepth === 'recognize' ? 'recognize' : 'understand';
+    settings.awlOptional = !!settings.awlOptional;
+    settings.stage3Ack = !!settings.stage3Ack;
+    settings.bandL = cleanBand(settings.bandL);
+    settings.bandR = cleanBand(settings.bandR);
+    const customIn = o.custom && typeof o.custom === 'object' ? o.custom : {};
+    const awlIn = o.awl && typeof o.awl === 'object' ? o.awl : {};
     return {
       ...base,
       ...o,
       schema: SCHEMA,
       words: o.words && typeof o.words === 'object' ? o.words : {},
       days: o.days && typeof o.days === 'object' ? o.days : {},
+      custom: {
+        listen: Array.isArray(customIn.listen) ? customIn.listen : [],
+        review: Array.isArray(customIn.review) ? customIn.review : [],
+      },
+      awl: { started: awlIn.started && typeof awlIn.started === 'object' ? awlIn.started : {} },
       settings,
       news: o.news && Array.isArray(o.news.items) ? o.news : base.news,
       writing: o.writing && typeof o.writing === 'object' ? o.writing : {},
@@ -282,6 +331,13 @@
   }
 
   function pathRank(w) {
+    if (S.settings.followPath) {
+      const stage = S.settings.stage || 1;
+      if (stage === 2 && AWL_INDEX.has(w.w)) return AWL_INDEX.get(w.w);
+      if (stage === 1 && GK_INDEX.has(w.w)) return GK_INDEX.get(w.w);
+      if (stage === 4 && CET_INDEX.has(w.w)) return CET_INDEX.get(w.w);
+      return 1000000 + (w._i || 0);
+    }
     const book = BOOK_RANK[w.t] == null ? 9 : BOOK_RANK[w.t];
     const len = w.t === 'ielts' || w.t === 'toefl' ? String(w.w).length : 0;
     return book * 100000 + len * 1000 + (w._i || 0);
@@ -387,17 +443,251 @@
     return (r.new || 0) + (r.review || 0) + (r.quiz || 0);
   }
 
-  /* ---------- 词库选择 ---------- */
+  /* ---------- 词库选择与推荐路径 ---------- */
+
+  function deckInfo(id) {
+    return TOPIC_MAP.get(id) || DECK_META[id] || null;
+  }
+
+  function studyBadge(w) {
+    const active = activeDecks();
+    if (AWL_INDEX.has(w.w) && active.indexOf('awl') >= 0) return DECK_META.awl;
+    if (GK_INDEX.has(w.w) && active.indexOf('gk') >= 0 && (!S.settings.followPath || (S.settings.stage || 1) === 1)) return DECK_META.gk;
+    if (CET_INDEX.has(w.w) && active.indexOf('cet4') >= 0 && (!S.settings.followPath || (S.settings.stage || 1) === 4)) return DECK_META.cet4;
+    return deckInfo(w.t);
+  }
+
+  function knownDeckIds() {
+    return TOPICS.map((t) => t.id).concat(['gk', 'awl', 'cet4', 'listen', 'review']);
+  }
+
+  function customLists() {
+    if (!S.custom || typeof S.custom !== 'object') S.custom = { listen: [], review: [] };
+    if (!Array.isArray(S.custom.listen)) S.custom.listen = [];
+    if (!Array.isArray(S.custom.review)) S.custom.review = [];
+    return S.custom;
+  }
+
+  function findCustom(name) {
+    const lists = customLists();
+    const listen = lists.listen.find((e) => e && e.w === name);
+    const review = lists.review.find((e) => e && e.w === name);
+    if (!listen && !review) return null;
+    return {
+      w: name,
+      note: (listen && listen.note) || (review && review.note) || '',
+      para: (listen && listen.para) || (review && review.para) || '',
+      listen: !!listen,
+      review: !!review,
+    };
+  }
+
+  function wordOf(name) {
+    if (!name) return null;
+    const bank = WORD_MAP.get(name) || EXTRA_MAP.get(name);
+    const note = findCustom(name);
+    if (bank) {
+      if (!note) return bank;
+      return Object.assign({}, bank, { note: note.note, para: note.para, _listen: note.listen, _review: note.review });
+    }
+    if (!note) return null;
+    return {
+      w: name,
+      pos: '',
+      zh: note.note || '',
+      ipa: '',
+      t: note.listen ? 'listen' : 'review',
+      note: note.note,
+      para: note.para,
+      _listen: note.listen,
+      _review: note.review,
+      _custom: true,
+    };
+  }
+
+  function reportedBand() {
+    const vals = [S.settings.bandL, S.settings.bandR].map(Number).filter((n) => isFinite(n) && n > 0);
+    if (!vals.length) return null;
+    return Math.min.apply(null, vals);
+  }
+
+  function awlLimit() {
+    const total = PATH ? PATH.familyCount() : 0;
+    const band = reportedBand();
+    if (S.settings.awlOptional || (band != null && band >= 7)) return total;
+    return Math.min(360, total);
+  }
+
+  function pathDeckIds() {
+    const stage = PATH.STAGES[(S.settings.stage || 1) - 1] || PATH.STAGES[0];
+    return stage.decks.concat(['listen', 'review']);
+  }
 
   function activeDecks() {
-    const picked = S.settings.decks;
-    if (!Array.isArray(picked)) return TOPICS.map((t) => t.id);
-    return picked.filter((id) => TOPIC_MAP.has(id));
+    const picked = S.settings.followPath ? pathDeckIds() : S.settings.decks;
+    if (!Array.isArray(picked) || !picked.length) return [];
+    return knownDeckIds().filter((id) => picked.indexOf(id) >= 0);
+  }
+
+  function wordsForDeck(id) {
+    if (id === 'listen' || id === 'review') return customLists()[id].map((e) => wordOf(e.w)).filter(Boolean);
+    if (id === 'awl' || id === 'awl-all') {
+      const limit = id === 'awl-all' ? PATH.familyCount() : awlLimit();
+      const out = [];
+      for (let i = 0; i < limit && i < PATH_DATA.awl.length; i += 1) {
+        const w = wordOf(PATH_DATA.awl[i].rep);
+        if (w) out.push(w);
+      }
+      return out;
+    }
+    if (id === 'gk' || id === 'cet4') return (PATH_DATA[id] || []).map(wordOf).filter(Boolean);
+    return WORDS.filter((w) => w.t === id);
   }
 
   function deckWords() {
-    const set = new Set(activeDecks());
-    return WORDS.filter((w) => set.has(w.t));
+    const map = new Map();
+    activeDecks().forEach((id) => {
+      wordsForDeck(id).forEach((w) => {
+        if (w && w.w && !map.has(w.w)) map.set(w.w, w);
+      });
+    });
+    return [...map.values()];
+  }
+
+  function listCoverage(id) {
+    const words = wordsForDeck(id);
+    if (!words.length) return 0;
+    let n = 0;
+    words.forEach((w) => {
+      if (S.words[w.w] && S.words[w.w].seen) n += 1;
+    });
+    return n / words.length;
+  }
+
+  function unlockedMax() {
+    let n = 1;
+    if (listCoverage('gk') >= 0.8) n = 2;
+    if (n >= 2 && listCoverage('awl') >= 0.8) n = 3;
+    if (n >= 3 && S.settings.stage3Ack) n = 4;
+    return n;
+  }
+
+  function planDueWords(day) {
+    if (!PATH || activeDecks().indexOf('awl') < 0) return [];
+    const started = (S.awl && S.awl.started) || {};
+    const hits = PATH.dueLists(started, day, (a, b) => dayNum(b) - dayNum(a));
+    const out = [];
+    const seen = new Set();
+    hits.forEach((hit) => {
+      const span = PATH.listSpan(hit.list, PATH.familyCount());
+      for (let i = span.start; i < span.end; i += 1) {
+        const fam = PATH_DATA.awl[i];
+        if (!fam || !fam.rep || seen.has(fam.rep)) continue;
+        const rec = S.words[fam.rep];
+        if (!rec || !rec.seen) continue;
+        const w = wordOf(fam.rep);
+        if (!w) continue;
+        seen.add(fam.rep);
+        out.push(w);
+      }
+    });
+    return out;
+  }
+
+  function queueDue(pool, day) {
+    const map = new Map();
+    planDueWords(day).forEach((w) => {
+      const rec = S.words[w.w];
+      map.set(w.w, { w: w, plan: true, due: (rec && rec.due) || day });
+    });
+    pool.forEach((w) => {
+      const rec = S.words[w.w];
+      if (!rec || !rec.seen || rec.due > day) return;
+      if (!map.has(w.w)) map.set(w.w, { w: w, plan: false, due: rec.due });
+    });
+    const all = [...map.values()].sort((a, b) => {
+      if (a.plan !== b.plan) return a.plan ? -1 : 1;
+      return String(a.due).localeCompare(String(b.due)) || a.w.w.localeCompare(b.w.w);
+    });
+    const planN = all.filter((x) => x.plan).length;
+    const cap = Math.max(Math.max(5, Math.min(200, S.settings.dailyReview || 40)), planN);
+    return all.slice(0, cap).map((x) => x.w);
+  }
+
+  function awlUnseen(mode) {
+    const limit = awlLimit();
+    if (mode === 'extra') {
+      const out = [];
+      for (let i = 0; i < limit; i += 1) {
+        const fam = PATH_DATA.awl[i];
+        const rec = fam && fam.rep ? S.words[fam.rep] : null;
+        if (fam && fam.rep && (!rec || !rec.seen)) {
+          const w = wordOf(fam.rep);
+          if (w) out.push(w);
+        }
+      }
+      return out;
+    }
+    const lists = PATH.listCount(limit);
+    for (let listNo = 1; listNo <= lists; listNo += 1) {
+      const span = PATH.listSpan(listNo, limit);
+      const batch = [];
+      for (let i = span.start; i < span.end; i += 1) {
+        const fam = PATH_DATA.awl[i];
+        const rec = fam && fam.rep ? S.words[fam.rep] : null;
+        if (fam && fam.rep && (!rec || !rec.seen)) {
+          const w = wordOf(fam.rep);
+          if (w) batch.push(w);
+        }
+      }
+      if (batch.length) return batch;
+    }
+    return [];
+  }
+
+  function orderedUnseen(pool, mode) {
+    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen).sort((a, b) => {
+      const pa = S.words[a.w] && S.words[a.w].pinned ? 0 : 1;
+      const pb = S.words[b.w] && S.words[b.w].pinned ? 0 : 1;
+      return pa - pb || pathRank(a) - pathRank(b) || a.w.localeCompare(b.w);
+    });
+    if (activeDecks().indexOf('awl') < 0) return unseen;
+    const awlPart = awlUnseen(mode);
+    const awlNames = new Set(PATH_DATA.awl.map((f) => f.rep).filter(Boolean));
+    const rest = unseen.filter((w) => !awlNames.has(w.w));
+    const pinned = rest.filter((w) => S.words[w.w] && S.words[w.w].pinned);
+    const others = rest.filter((w) => !(S.words[w.w] && S.words[w.w].pinned));
+    const merged = [];
+    const seen = new Set();
+    pinned.concat(awlPart, others).forEach((w) => {
+      if (seen.has(w.w)) return;
+      seen.add(w.w);
+      merged.push(w);
+    });
+    return merged;
+  }
+
+  function noteAwlIntroduced(word, day) {
+    const idx = AWL_INDEX.get(word);
+    if (idx == null || !PATH) return;
+    const listNo = Math.floor(idx / PATH.BATCH) + 1;
+    if (!S.awl || typeof S.awl !== 'object') S.awl = { started: {} };
+    if (!S.awl.started || typeof S.awl.started !== 'object') S.awl.started = {};
+    if (!S.awl.started[listNo]) S.awl.started[listNo] = day;
+  }
+
+  function currentAwlPlan() {
+    const limit = awlLimit();
+    const lists = PATH.listCount(limit);
+    for (let listNo = 1; listNo <= lists; listNo += 1) {
+      const span = PATH.listSpan(listNo, limit);
+      for (let i = span.start; i < span.end; i += 1) {
+        const fam = PATH_DATA.awl[i];
+        const rec = fam && fam.rep ? S.words[fam.rep] : null;
+        if (fam && fam.rep && (!rec || !rec.seen)) return PATH.planRow(listNo, limit);
+      }
+    }
+    return PATH.planRow(Math.max(1, lists), limit);
   }
 
   /* ---------- 错词复习（艾宾浩斯曲线） ---------- */
@@ -458,6 +748,10 @@
       }
       if (r.due <= day) due += 1;
     }
+    planDueWords(day).forEach((w) => {
+      const r = S.words[w.w];
+      if (r && r.seen && r.due > day) due += 1;
+    });
     const d = S.days[day] || { new: 0, review: 0, right: 0, wrong: 0 };
     const week = [];
     const weekNames = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
@@ -514,27 +808,15 @@
     const day = today();
     const rnd = mulberry32(dayNum(day) + 17);
     const pool = deckWords();
-    const due = pool.filter((w) => {
-      const r = S.words[w.w];
-      return r && r.seen && r.due <= day;
-    })
-      .sort((a, b) => {
-        const ra = S.words[a.w];
-        const rb = S.words[b.w];
-        return ra.due.localeCompare(rb.due) || (ra.box || 0) - (rb.box || 0);
-      })
-      .slice(0, Math.max(5, Math.min(200, S.settings.dailyReview || 40)));
+    const due = queueDue(pool, day);
     const todayNew = (S.days[day] && S.days[day].new) || 0;
     const goalLeft = Math.max(0, (S.settings.dailyGoal || 0) - activityOf(S.days[day]));
     const newRoom = Math.max(0, S.settings.dailyNew - todayNew);
-    const cap = mode === 'extra' ? Math.max(10, S.settings.dailyNew || 15) : Math.min(newRoom, goalLeft);
-    const unseen = pool.filter((w) => !S.words[w.w] || !S.words[w.w].seen)
-      .sort((a, b) => {
-        const pa = S.words[a.w] && S.words[a.w].pinned ? 0 : 1;
-        const pb = S.words[b.w] && S.words[b.w].pinned ? 0 : 1;
-        return pa - pb || pathRank(a) - pathRank(b) || a.w.localeCompare(b.w);
-      });
-    const newPicked = unseen.slice(0, cap);
+    const awlOn = activeDecks().indexOf('awl') >= 0;
+    const cap = mode === 'extra'
+      ? Math.max(10, S.settings.dailyNew || 15)
+      : (awlOn ? newRoom : Math.min(newRoom, goalLeft));
+    const newPicked = orderedUnseen(pool, mode === 'extra' ? 'extra' : 'daily').slice(0, Math.max(0, cap));
 
     if (mode === 'review') return { queue: due.map((w) => ({ w: w.w, kind: 'review' })), newCount: 0, reviewCount: due.length };
     if (mode === 'new' || mode === 'extra') return { queue: newPicked.map((w) => ({ w: w.w, kind: 'new' })), newCount: newPicked.length, reviewCount: 0 };
@@ -591,6 +873,7 @@
     const rec = ensureRec(item.w);
     const first = rec.seen === 0;
     applyGrade(rec, g);
+    if (first) noteAwlIntroduced(item.w, today());
     const d = dayRec();
     if (first) d.new += 1;
     else d.review += 1;
@@ -896,10 +1179,14 @@
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${isCue ? '口语 Part 2' : isRead ? '阅读练习' : '写作 Task 2'}</div><div class="top-sub">${isCue ? '计时练习' : isRead ? '原创模拟题' : '草稿只存本机'}</div></div></div>`;
     }
     if (S.ui.screen === 'decks') {
-      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">学习范围</div><div class="top-sub">${activeDecks().length} / ${TOPICS.length} 个词库</div></div></div>`;
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">学习范围</div><div class="top-sub">${activeDecks().length} / ${knownDeckIds().length} 个词库</div></div></div>`;
+    }
+    if (S.ui.screen === 'path' || S.ui.screen === 'collect' || S.ui.screen === 'awl-plan') {
+      const title = S.ui.screen === 'path' ? '推荐路径' : S.ui.screen === 'collect' ? '生词' : 'AWL 分组';
+      return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${title}</div><div class="top-sub">${S.settings.followPath ? '按阶段学' : '自己选词库'}</div></div></div>`;
     }
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('words:') === 0) {
-      const tt = TOPIC_MAP.get(S.ui.screen.slice(6));
+      const tt = deckInfo(S.ui.screen.slice(6));
       return `<div class="back"><button class="icon-btn" data-act="back" aria-label="返回">←</button><div><div class="top-title">${esc(tt ? tt.zh : '词表')}</div><div class="top-sub">${topicList(S.ui.screen.slice(6)).length} 词</div></div></div>`;
     }
     if (typeof S.ui.screen === 'string' && S.ui.screen.indexOf('news:') === 0) {
@@ -1361,6 +1648,45 @@
     render();
   }
 
+  function foundationNote() {
+    if (!S.settings.followPath || (S.settings.stage || 1) !== 1) return '';
+    const cov = listCoverage('gk');
+    if (cov >= 0.8) return '';
+    return `<p class="small muted">高中词汇大约学了 ${Math.round(cov * 100)}%。这一阶段先把词认熟，整套练习可以先少做。</p>`;
+  }
+
+  function pathCard() {
+    const stage = PATH.STAGES[(S.settings.stage || 1) - 1] || PATH.STAGES[0];
+    const band = reportedBand();
+    const target = band == null ? null : PATH.stageForBand(band);
+    const covId = stage.decks[0];
+    const cov = covId ? Math.round(listCoverage(covId) * 100) : null;
+    const targetLine = target && target > (S.settings.stage || 1)
+      ? `<p class="small">按你填的分数，目标是第 ${target} 阶段。前面的阶段要按顺序走完。</p>`
+      : '';
+    let awlLine = '';
+    if ((S.settings.stage || 1) === 2 && activeDecks().indexOf('awl') >= 0) {
+      const row = currentAwlPlan();
+      const due = PATH.dueLists((S.awl && S.awl.started) || {}, today(), (a, b) => dayNum(b) - dayNum(a));
+      const reviewLine = due.length
+        ? '今天复习 ' + PATH.reviewText(due)
+        : (row.selfCheck ? '首日没有更早的组。学完可以自测今天的词族。' : ('这一组的复习节点：' + (PATH.reviewText(row.reviews) || '无')));
+      awlLine = `<p class="small">第 ${row.list} 组 · ${row.count} 个词族 · ${esc(row.label)} · ${esc(row.priority)}</p><p class="small muted">${esc(reviewLine)}</p>`;
+    }
+    return `<section class="card path-card">
+      <div class="card-head"><span>${S.settings.followPath ? '推荐路径' : '自己选的词库'}</span><span>第 ${stage.id} 阶段</span></div>
+      <b>${esc(stage.title)}</b>
+      <p class="small muted">${esc(stage.band)} · ${esc(stage.blurb)}</p>
+      ${cov != null ? `<p class="small">本阶段词表进度 ${cov}%</p>` : (stage.gap ? '<p class="small">核心词表未内置，听力答案词和复盘生词仍在。</p>' : '')}
+      ${targetLine}
+      ${awlLine}
+      <div class="row2">
+        <button class="btn ghost sm" data-act="open:path">分数和阶段</button>
+        <button class="btn ghost sm" data-act="open:collect">听力 / 复盘生词</button>
+      </div>
+    </section>`;
+  }
+
   function todayScreen() {
     const st = stats();
     const done = st.today.total;
@@ -1413,6 +1739,7 @@
         <button class="bell" data-act="tab:review" aria-label="复习提醒">${st.due ? '<i></i>' : ''}${svg('review')}</button>
       </section>
       ${planBar}
+      ${pathCard()}
       <section class="today-card">
         <div>
           <div class="eyebrow">今日学习</div>
@@ -1428,7 +1755,7 @@
       <button class="btn primary" data-act="start">${label} ›</button>
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <button class="btn ghost sm scope" data-act="open:decks">
-        <span>学习范围</span><b>${activeDecks().length}/${TOPICS.length} 个词库 · ${deckWords().length} 词</b>
+        <span>学习范围</span><b>${activeDecks().length}/${knownDeckIds().length} 个词库 · ${deckWords().length} 词</b>
       </button>
       <div class="row2">
         <button class="btn ghost sm" data-act="tab:quiz">快速测验</button>
@@ -1458,9 +1785,12 @@
       { id: 'curated', zh: '精编 720', ids: ['education', 'environment', 'health', 'society', 'technology', 'work'], color: 'linear-gradient(160deg,#5b4bdb,#7c8cff)' },
       { id: 'ielts', zh: '雅思词表', ids: ['ielts'], color: 'linear-gradient(160deg,#2457d6,#4fd1c5)' },
       { id: 'toefl', zh: '托福词表', ids: ['toefl'], color: 'linear-gradient(160deg,#0f766e,#34d399)' },
+      { id: 'gk', zh: '高中词汇', ids: ['gk'], color: 'linear-gradient(160deg,#b45309,#f6c453)' },
+      { id: 'awl', zh: '学术词表', ids: ['awl'], color: 'linear-gradient(160deg,#0e7490,#67e8f9)' },
+      { id: 'cet4', zh: '四级词汇', ids: ['cet4'], color: 'linear-gradient(160deg,#9d174d,#fb7185)' },
     ];
     return groups.map((g) => {
-      const words = WORDS.filter((w) => g.ids.indexOf(w.t) >= 0);
+      const words = DECK_META[g.ids[0]] ? wordsForDeck(g.ids[0]) : WORDS.filter((w) => g.ids.indexOf(w.t) >= 0);
       const mastered = words.filter((w) => S.words[w.w] && S.words[w.w].box >= MASTER_BOX).length;
       const pct = words.length ? Math.round((mastered / words.length) * 100) : 0;
       const on = g.ids.some((id) => activeDecks().indexOf(id) >= 0);
@@ -1481,7 +1811,9 @@
     }).join(' ');
     const dueWords = deckWords().filter((w) => {
       const r = S.words[w.w];
-      return r && r.seen && r.due <= today();
+      if (!r || !r.seen) return false;
+      if (r.due <= today()) return true;
+      return planDueWords(today()).some((x) => x.w === w.w);
     }).slice(0, 8);
     const level = (w) => {
       const r = ensureFsrs(S.words[w.w]);
@@ -1520,22 +1852,79 @@
 
   /* ---------- 渲染：学习 ---------- */
 
+  function synOf(word) {
+    if (!synOf.map) {
+      synOf.map = new Map();
+      SYN.forEach((pair) => {
+        synOf.map.set(pair[0], pair[1]);
+        if (!synOf.map.has(pair[1])) synOf.map.set(pair[1], pair[0]);
+      });
+    }
+    return synOf.map.get(word) || '';
+  }
+
+  function senseLinesOf(w) {
+    const stored = SENSES[w.w] || w.senses;
+    if (stored && stored.length) return stored.slice();
+    if (w.zh) {
+      return String(w.zh).split(/[；;]/).map((s) => s.trim()).filter(Boolean).map((s) => (w.pos ? w.pos + ' ' : '') + s);
+    }
+    if (w._custom) return ['词库里没有这条释义。可以在生词里补一句自己的笔记。'];
+    return [];
+  }
+
+  function familyBits(w) {
+    const idx = AWL_INDEX.get(w.w);
+    if (idx == null) return null;
+    const fam = PATH_DATA.awl[idx];
+    const bits = [];
+    (fam.forms || []).forEach((sp) => {
+      const member = WORD_MAP.get(sp) || EXTRA_MAP.get(sp);
+      if (!member || member.w === w.w) return;
+      const gloss = String(member.zh || '').split(/[；;]/)[0];
+      bits.push(member.w + (gloss ? ' ' + gloss : ''));
+    });
+    return { head: fam.h, sub: fam.sub, bits: bits.slice(0, 6) };
+  }
+
+  function cardDetails(w) {
+    const depth = S.settings.studyDepth === 'recognize' ? 'recognize' : 'understand';
+    const senses = senseLinesOf(w);
+    const cap = depth === 'recognize' ? 1 : 6;
+    const shown = senses.slice(0, cap);
+    const more = senses.length - shown.length;
+    const senseHtml = shown.length
+      ? `<div class="meaning">${shown.map((s, i) => `<div class="sense${i === 0 ? ' main' : ''}">${esc(s)}</div>`).join('')}${depth === 'understand' && more > 0 ? `<div class="example">还有 ${more} 条释义</div>` : ''}</div>`
+      : '';
+    const ex = w.ex ? `<div class="example selectable">${esc(w.ex)}</div>` : '';
+    if (depth === 'recognize') return senseHtml + ex;
+    const def = w.def ? `<div class="example en-def selectable">${esc(w.def)}</div>` : '';
+    const fam = familyBits(w);
+    const famHtml = fam
+      ? `<div class="example">同族 ${esc((fam.head && fam.head !== w.w ? fam.head + ' · ' : '') + fam.bits.join(' · '))}${fam.sub ? ' · Sublist ' + fam.sub + ' · ' + esc(PATH.priorityOf(fam.sub)) : ''}</div>`
+      : '';
+    const custom = findCustom(w.w);
+    const para = (custom && custom.para) || (custom && custom.listen ? synOf(w.w) : '');
+    const paraHtml = para ? `<div class="example">改写 ${esc(para)}</div>` : '';
+    const note = custom && custom.note ? `<div class="example">笔记 ${esc(custom.note)}</div>` : '';
+    const col = w.col && w.col.length ? `<div class="example">搭配 ${esc(w.col.join(' · '))}</div>` : '';
+    const conf = w.conf && w.conf.length ? `<div class="example">易混 ${esc(w.conf.join(' / '))}</div>` : '';
+    return senseHtml + ex + def + famHtml + col + conf + paraHtml + note;
+  }
+
   function studyScreen() {
     const s = S.session;
     if (!s) return studyIntro();
     if (s.done) return studySummary();
     const item = s.queue[s.pos];
-    const w = WORD_MAP.get(item.w);
-    const topic = TOPIC_MAP.get(w.t);
+    const w = wordOf(item.w) || { w: item.w, pos: '', zh: '', t: '' };
+    const topic = studyBadge(w);
     const isNew = item.kind === 'new';
     const pct = Math.round((s.pos / s.queue.length) * 100);
     const revealed = s.revealed;
+    const depth = S.settings.studyDepth === 'recognize' ? 'recognize' : 'understand';
     const body = revealed
-      ? `<div class="divider"></div>
-         <div class="meaning">${esc(w.pos)} ${esc(w.zh)}</div>
-         ${w.ex ? `<div class="example selectable">${esc(w.ex)}</div>` : w.def ? `<div class="example en-def selectable">${esc(w.def)}</div>` : ''}
-         ${w.col && w.col.length ? `<div class="example">搭配 ${esc(w.col.join(' · '))}</div>` : ''}
-         ${w.conf && w.conf.length ? `<div class="example">易混 ${esc(w.conf.join(' / '))}</div>` : ''}`
+      ? `<div class="divider"></div>${cardDetails(w)}`
       : `<div class="hint">先回忆一下，再点开对照</div>`;
     return `<div class="screen">
       <div class="study-head">
@@ -1560,6 +1949,10 @@
                <button class="grade rate warn" data-act="grade:hard"><b>模糊</b><span>?</span></button>
                <button class="grade rate good" data-act="grade:good"><b>认识</b><span>✓</span></button>
              </div>
+             <div class="seg depth-seg">
+               <button class="seg-item ${depth === 'recognize' ? 'active' : ''}" data-act="depth:recognize">认识</button>
+               <button class="seg-item ${depth === 'understand' ? 'active' : ''}" data-act="depth:understand">理解</button>
+             </div>
              <button class="linkbtn" data-act="grade:easy">太简单了</button>
              <button class="linkbtn" data-act="end">结束本组</button>`
           : `<button class="btn primary" data-act="reveal">显示释义</button>`
@@ -1571,7 +1964,8 @@
     const st = stats();
     return `<div class="screen">
       <h1>学习</h1>
-      <p class="small muted">新词按精编 720，再按雅思词表往下排，不再随机抽。复习用 FSRS，到期太多时每天只安排 ${S.settings.dailyReview || 40} 个${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}。</p>
+      <p class="small muted">${S.settings.followPath ? '新词按当前阶段的词表往下排。' : '自己选词库时，精编仍排在雅思词表前面。'}复习用 FSRS。学术词表另外按 1、2、4、7、15 天把该出现的组提出来，不改记忆算法。每天复习上限 ${S.settings.dailyReview || 40} 个${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}。</p>
+      ${foundationNote()}
       <div class="chips">
         <div class="chip"><b>${st.due}</b><span>待复习</span></div>
         <div class="chip"><b>${st.newLeft}</b><span>可学新词</span></div>
@@ -1626,7 +2020,7 @@
     if (!q) return quizSetup();
     if (q.done) return quizResult();
     const item = q.items[q.pos];
-    const w = WORD_MAP.get(item.w) || { w: item.w, pos: '', zh: '', ex: '' };
+    const w = wordOf(item.w) || { w: item.w, pos: '', zh: '', ex: '' };
     const last = q.pos + 1 >= q.items.length;
     const kindLabel = item.kind === 'zh' ? '英译中' : item.kind === 'en' ? '中译英'
       : item.kind === 'listen' ? '听音选词' : item.kind === 'type-listen' ? '听写'
@@ -1695,6 +2089,7 @@
     return `<div class="screen">
       <h1>测验</h1>
       <p class="small muted">每组 10 题，答完立刻看结果，答错的词会进错词本。</p>
+      ${foundationNote()}
       <div class="modes">
         ${modes
           .map(
@@ -1719,7 +2114,7 @@
       ? `<section class="card"><div class="card-head"><span>答错的词</span><span>${wrongItems.length} 个</span></div>
           <div class="list">${wrongItems
             .map((x) => {
-              const w = WORD_MAP.get(x.w) || { w: x.w, pos: '', zh: '' };
+              const w = wordOf(x.w) || { w: x.w, pos: '', zh: '' };
               return `<div class="list-item"><div><div class="lw">${esc(w.w)}</div><div class="lz">${esc(w.pos)} ${esc(w.zh)}</div></div></div>`;
             })
             .join('')}</div></section>`
@@ -1918,34 +2313,137 @@
   let wordsView = { topic: '', q: '', limit: 60 };
 
   function topicList(id) {
+    if (id === 'awl') return wordsForDeck('awl-all');
+    if (DECK_META[id]) return wordsForDeck(id);
     return WORDS.filter((w) => w.t === id);
+  }
+
+  const BANDS = [5, 5.5, 6, 6.5, 7, 7.5, 8, 8.5, 9];
+
+  function bandChips(which) {
+    const current = which === 'R' ? S.settings.bandR : S.settings.bandL;
+    return `<div class="bands">${BANDS.map((n) => `<button type="button" class="${current === n ? 'on' : ''}" data-act="band:${which}:${n}">${n}</button>`).join('')}</div>`;
+  }
+
+  function pathScreen() {
+    const max = unlockedMax();
+    const band = reportedBand();
+    const target = band == null ? null : PATH.stageForBand(band);
+    const rows = PATH.STAGES.map((stage) => {
+      const locked = stage.id > max;
+      const on = (S.settings.stage || 1) === stage.id;
+      const covId = stage.decks[0];
+      const cov = covId ? Math.round(listCoverage(covId) * 100) + '%' : (stage.gap ? '词表未内置' : '');
+      return `<button class="stage ${on ? 'on' : ''} ${locked ? 'lock' : ''}" data-act="stage:${stage.id}">
+        <span><b>第 ${stage.id} 阶段 · ${esc(stage.title)}</b><span>${esc(stage.band)} · ${cov}</span></span>
+        <span class="arrow">${locked ? '未解锁' : on ? '当前' : '进入'}</span>
+      </button>`;
+    }).join('');
+    const ack = (S.settings.stage || 1) === 3
+      ? `<button class="btn ghost" data-act="stage3-ack">${S.settings.stage3Ack ? '第 4 阶段已解锁' : '这份核心词表还没有，先进入下一阶段'}</button>`
+      : '';
+    return `<div class="screen">
+      <h1>推荐路径</h1>
+      <p class="small muted">按听力和阅读里较低的那个分数看目标阶段。分数高也不会跳过还没学扎实的阶段。听力答案词和复盘生词每个阶段都保留。</p>
+      ${target ? `<p class="small">当前目标：第 ${target} 阶段。已解锁到第 ${max} 阶段。</p>` : '<p class="small">还没填分数。先选一个接近的听力和阅读分数。</p>'}
+      <h3>听力</h3>
+      ${bandChips('L')}
+      <h3>阅读</h3>
+      ${bandChips('R')}
+      <div class="stages">${rows}</div>
+      <p class="small muted">${esc((PATH.STAGES[(S.settings.stage || 1) - 1] || PATH.STAGES[0]).blurb)}</p>
+      <p class="small muted">第 3 阶段常说的学术核心 538 词表没有放进这个版本。听力答案词和复盘生词不会因此拿掉。</p>
+      ${ack}
+      <div class="seg">
+        <button class="seg-item ${S.settings.awlOptional ? '' : 'active'}" data-act="awl-optional:0">AWL 学到 Sublist 6</button>
+        <button class="seg-item ${S.settings.awlOptional ? 'active' : ''}" data-act="awl-optional:1">包含 Sublist 7–10</button>
+      </div>
+      <p class="small muted">Sublist 1–3 优先，4–6 接着学，7–10 按目标再开。目标分数达到 7 时会自动包含 7–10。</p>
+      <button class="btn ghost" data-act="open:awl-plan">查看 AWL 分组表</button>
+      <button class="btn ghost" data-act="awl-pace">按计划每天 25 个新词</button>
+      <div class="row2">
+        <button class="btn ghost sm" data-act="path:on">用推荐路径</button>
+        <button class="btn ghost sm" data-act="path:off">改为自己选词库</button>
+      </div>
+      ${foundationNote()}
+    </div>`;
+  }
+
+  function awlPlanScreen() {
+    const active = awlLimit();
+    const rows = PATH.fullSchedule(PATH.familyCount()).map((row) => {
+      const optional = row.start >= active;
+      const review = row.reviews.length ? PATH.reviewText(row.reviews) : '没有更早的组';
+      return `<div class="list-item ${optional ? 'dim' : ''}">
+        <div><div class="lw">第 ${row.list} 组 · ${row.count} 个词族${optional ? ' · 可选' : ''}</div>
+        <div class="lz">${esc(row.label)} · ${esc(row.priority)}</div>
+        <div class="lz">${row.selfCheck ? '首日可以自测，没有往日的复习。' : '复习 ' + esc(review)}</div></div>
+      </div>`;
+    }).join('');
+    const due = PATH.dueLists((S.awl && S.awl.started) || {}, today(), (a, b) => dayNum(b) - dayNum(a));
+    return `<div class="screen">
+      <h1>AWL 分组</h1>
+      <p class="small muted">每组大约 25 个词族，按 Sublist 顺序编号。复习节点是学完该组之后的第 1、2、4、7、15 天。记忆仍由 FSRS 记录，这些节点只保证该组会在当天出现。</p>
+      <p class="small">${due.length ? '按已经开始的组，今天要复习 ' + esc(PATH.reviewText(due)) : '还没有开始的组。第一组没有更早的复习。'}</p>
+      <button class="btn primary" data-act="awl-check">自测今天新学的词族</button>
+      <section class="card"><div class="list">${rows}</div></section>
+    </div>`;
+  }
+
+  function collectScreen() {
+    const lists = customLists();
+    const block = (kind, title) => {
+      const rows = lists[kind].map((e, i) => {
+        const w = wordOf(e.w) || { w: e.w, zh: '' };
+        return `<div class="list-item"><div><div class="lw">${esc(e.w)}</div><div class="lz">${esc(e.note || w.zh || '词库里没有释义')}${e.para ? ' · 改写 ' + esc(e.para) : ''}</div></div><button class="btn ghost xs" data-act="collect-del:${kind}:${i}">移除</button></div>`;
+      }).join('');
+      return `<section class="card"><div class="card-head"><span>${title}</span><span>${lists[kind].length}</span></div><div class="list">${rows || '<p class="small muted">还没有词</p>'}</div></section>`;
+    };
+    return `<div class="screen">
+      <h1>生词</h1>
+      <p class="small muted">听力答案词和复盘生词会跟着每一个阶段走。词库里已有的词用词库释义；没有的词只保存你写的笔记，不会编一条词典释义。</p>
+      <input id="addWord" class="draft" placeholder="英文单词" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <input id="addNote" class="draft" placeholder="笔记（可选）" autocomplete="off">
+      <input id="addPara" class="draft" placeholder="听到的改写（可选）" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="row2">
+        <button class="btn primary sm" data-act="collect-add:listen">加入听力答案词</button>
+        <button class="btn ghost sm" data-act="collect-add:review">加入复盘生词</button>
+      </div>
+      ${block('listen', '听力答案词')}
+      ${block('review', '复盘生词')}
+    </div>`;
   }
 
   function decksScreen() {
     const picked = new Set(activeDecks());
     const st = stats();
-    const rows = TOPICS.map((t) => {
-      const total = topicList(t.id).length;
-      const row = st.topics.find((x) => x.id === t.id) || { mastered: 0 };
-      const on = picked.has(t.id);
+    const ids = knownDeckIds();
+    const rows = ids.map((id) => {
+      const info = deckInfo(id) || { zh: id };
+      const list = wordsForDeck(id);
+      const total = list.length;
+      const row = st.topics.find((x) => x.id === id);
+      const mastered = row ? row.mastered : list.filter((w) => S.words[w.w] && S.words[w.w].box >= MASTER_BOX).length;
+      const on = picked.has(id);
       return `<div class="deck ${on ? 'on' : ''}">
-        <button class="deck-main" data-act="deck:${t.id}">
+        <button class="deck-main" data-act="deck:${id}">
           <span class="deck-box">${on ? '✓' : ''}</span>
-          <span class="deck-txt"><b>${esc(t.zh)}</b><small>${total} 词 · 已掌握 ${row.mastered}</small></span>
+          <span class="deck-txt"><b>${esc(info.zh)}</b><small>${total} 词 · 已掌握 ${mastered}</small></span>
         </button>
-        <button class="deck-go" data-act="words:${t.id}">词表 ›</button>
+        <button class="deck-go" data-act="words:${id}">词表 ›</button>
       </div>`;
     }).join('');
     const n = picked.size;
     return `<div class="screen">
       <h1>学习范围</h1>
-      <p class="small muted">勾选的词库会进入「今天」「学习」和「测验」；词表随时可以翻阅，不受勾选影响。</p>
+      <p class="small muted">${S.settings.followPath ? '现在按推荐阶段学习。勾选下面的词库会改成自己选。' : '勾选的词库会进入「今天」「学习」和「测验」。'}词表随时可以翻阅。</p>
       <div class="row2">
-        <button class="btn ghost sm" data-act="deck-all">全选 ${TOPICS.length}</button>
-        <button class="btn ghost sm" data-act="deck-none">全不选</button>
+        <button class="btn ghost sm" data-act="path:on">推荐路径</button>
+        <button class="btn ghost sm" data-act="deck-all">全选 ${ids.length}</button>
       </div>
       <section class="card"><div class="decks">${rows}</div></section>
-      <p class="small muted center">已选 ${n} / ${TOPICS.length} 个词库 · 共 ${deckWords().length} 词</p>
+      <p class="small muted center">已选 ${n} / ${ids.length} 个词库 · 共 ${deckWords().length} 词</p>
+      <button class="btn ghost sm" data-act="deck-none">全不选</button>
       <button class="btn primary" data-act="back">完成</button>
     </div>`;
   }
@@ -1978,13 +2476,13 @@
   }
 
   function wordsScreen(id) {
-    const t = TOPIC_MAP.get(id);
-    const total = t ? topicList(id).length : 0;
-    const st = stats();
-    const row = st.topics.find((x) => x.id === id) || { mastered: 0 };
+    const t = deckInfo(id);
+    const list = topicList(id);
+    const mastered = list.filter((w) => S.words[w.w] && S.words[w.w].box >= MASTER_BOX).length;
+    const awlNote = id === 'awl' ? ' · 学习队列默认到 Sublist 6，共 ' + awlLimit() + ' 个词族' : '';
     return `<div class="screen">
       <h1>${esc(t ? t.zh : '词表')}</h1>
-      <p class="small muted">共 ${total} 词 · 已掌握 ${row.mastered}${t && t.en ? ' · ' + esc(t.en) : ''}</p>
+      <p class="small muted">共 ${list.length} 词 · 已掌握 ${mastered}${t && t.en ? ' · ' + esc(t.en) : ''}${awlNote}</p>
       <div class="wsearch"><input id="wq" type="search" placeholder="搜索单词或中文释义" value="${esc(wordsView.q || '')}" autocomplete="off" spellcheck="false"></div>
       <div id="wlist">${wordsListHTML()}</div>
       <button class="btn ghost" data-act="open:decks">切换学习范围</button>
@@ -2370,15 +2868,19 @@ Some caution is warranted. Much of the research uses small samples, and effects 
 
   function lookupSheet() {
     if (!S.lookup) return '';
-    const w = WORD_MAP.get(S.lookup);
-    if (!w) {
-      return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(S.lookup)}</h3><p>词库里没有这个词。</p><button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
-    }
-    return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(w.w)}</h3><p>${esc(w.pos)} ${esc(w.zh)}</p>${w.ipa ? `<p>${esc(w.ipa)}</p>` : ''}<button class="btn primary" data-act="add-word:${esc(w.w)}">加入今日学习</button><button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
+    const w = wordOf(S.lookup);
+    const gloss = w ? `${esc(w.pos || '')} ${esc(w.zh || '词库里没有释义')}` : '词库里没有这个词。可以记入听力答案词或复盘生词，并自己写笔记。';
+    return `<div class="sheet-backdrop"><div class="sheet"><h3>${esc(w ? w.w : S.lookup)}</h3><p>${gloss}</p>${w && w.ipa ? `<p>${esc(w.ipa)}</p>` : ''}
+      ${w ? `<button class="btn primary" data-act="add-word:${esc(w.w)}">加入今日学习</button>` : ''}
+      <div class="row2">
+        <button class="btn ghost sm" data-act="collect-quick:listen">记入听力答案词</button>
+        <button class="btn ghost sm" data-act="collect-quick:review">记入复盘生词</button>
+      </div>
+      <button class="btn ghost" data-act="lookup-close">关闭</button></div></div>`;
   }
 
   function addWord(w) {
-    const word = WORD_MAP.get(w);
+    const word = wordOf(w);
     if (!word) {
       toast('词库里没有这个词');
       return;
@@ -2394,11 +2896,73 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     toast('已加入今日学习：' + word.w);
   }
 
+  function addCustom(kind, raw, note, para) {
+    const w = String(raw || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    if (!/^[a-z][a-z' .-]{0,40}$/.test(w)) {
+      toast('请输入英文单词');
+      render();
+      return;
+    }
+    const list = customLists()[kind === 'listen' ? 'listen' : 'review'];
+    if (list.some((e) => e && e.w === w)) {
+      toast('已经在这个列表里');
+      render();
+      return;
+    }
+    list.push({
+      w: w,
+      note: String(note || '').trim().slice(0, 80),
+      para: String(para || '').trim().slice(0, 40),
+      added: today(),
+    });
+    const rec = ensureRec(w);
+    if (!rec.seen) {
+      rec.pinned = true;
+      rec.due = today();
+    }
+    save();
+    render();
+    toast('已加入' + (kind === 'listen' ? '听力答案词' : '复盘生词'));
+  }
+
+  function startListCheck() {
+    const day = today();
+    const started = (S.awl && S.awl.started) || {};
+    const words = [];
+    Object.keys(started).forEach((key) => {
+      if (started[key] !== day) return;
+      const span = PATH.listSpan(Number(key), PATH.familyCount());
+      for (let i = span.start; i < span.end; i += 1) {
+        const fam = PATH_DATA.awl[i];
+        const rec = fam && fam.rep ? S.words[fam.rep] : null;
+        if (rec && rec.seen && rec.first === day) {
+          const w = wordOf(fam.rep);
+          if (w) words.push(w);
+        }
+      }
+    });
+    if (words.length < 4) {
+      toast('今天新学的词族还不够 4 个');
+      return;
+    }
+    const picked = words.slice(0, 20);
+    const items = picked.map((w) => makeItem(w, 'zh', picked.length >= 4 ? picked : deckWords())).filter(Boolean);
+    if (items.length < 4) {
+      toast('今天新学的词族还不够一组自测');
+      return;
+    }
+    S.quiz = { kind: 'zh', items: items, pos: 0, answered: false, score: 0, done: false };
+    S.ui.tab = 'quiz';
+    S.ui.screen = null;
+    save();
+    render();
+  }
+
   function onboardHTML() {
     if (S.settings.onboarded) return '';
     const step = S.onboardStep || 0;
     if (step === 0) {
-      return `<div class="onboard"><div class="eyebrow">第一次打开</div><h2>先把顺序定好</h2><p class="small muted">默认先学精编 720，再进入雅思词表。带录音的词可以离线听；没有录音时，联网发音来自有道词典，也可以改成手机自己的语音。</p><button class="btn primary" data-act="onboard:1">继续</button></div>`;
+      return `<div class="onboard"><div class="eyebrow">第一次打开</div><h2>先把顺序定好</h2><p class="small muted">推荐路径按听力和阅读分数分四段：高中词汇、学术词表、学术核心、四级词汇。不能跳过还没学扎实的阶段。听力答案词和复盘生词一直都在。精编和整本雅思词表仍可以自己选。带录音的词可以离线听；没有录音时，联网发音来自有道词典。</p><button class="btn primary" data-act="onboard:1">继续</button></div>`;
     }
     if (step === 1) {
       return `<div class="onboard"><h2>每天学多少</h2><p class="small muted">现在是每天 ${S.settings.dailyNew} 个新词，复习上限 ${S.settings.dailyReview || 40} 个。这些都能在「我的」里改。</p><button class="btn primary" data-act="onboard:2">继续</button></div>`;
@@ -2595,7 +3159,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     const rep = weakReport();
     const labels = { spell: '拼写', meaning: '词义', recognition: '再认' };
     const rows = rep.list.slice(0, 30).map((x) => {
-      const w = WORD_MAP.get(x.w) || { zh: '', pos: '' };
+      const w = wordOf(x.w) || { zh: '', pos: '' };
       const kind = x.spell >= x.meaning && x.spell >= x.recognition ? '拼写' : x.meaning >= x.recognition ? '词义' : '再认';
       return `<div class="list-item"><div><div class="lw">${esc(x.w)}</div><div class="lz">${esc(w.pos || '')} ${esc(w.zh || '')}</div></div><div class="lt">${kind} · ${x.n} 次</div></div>`;
     }).join('');
@@ -2674,6 +3238,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     if (screen.indexOf('cue:') === 0) return 'speaking';
     if (screen.indexOf('wtop:') === 0) return 'writing';
     if (screen.indexOf('read:') === 0) return 'reading';
+    if (screen === 'awl-plan' || screen === 'collect') return 'path';
     if (screen.indexOf('words:') === 0) return null;
     return null;
   }
@@ -2681,6 +3246,9 @@ Some caution is warranted. Much of the research uses small samples, and effects 
   function screenHTML() {
     if (S.ui.screen === 'settings') return settingsScreen();
     if (S.ui.screen === 'decks') return decksScreen();
+    if (S.ui.screen === 'path') return pathScreen();
+    if (S.ui.screen === 'collect') return collectScreen();
+    if (S.ui.screen === 'awl-plan') return awlPlanScreen();
     if (S.ui.screen === 'speaking') return cueScreen();
     if (S.ui.screen === 'syn') return synIntro();
     if (S.ui.screen === 'writing') return writingScreen();
@@ -2747,6 +3315,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
   function doReset() {
     S.words = {};
     S.days = {};
+    S.awl = { started: {} };
     S.session = null;
     S.quiz = null;
     S.lastSession = null;
@@ -3058,21 +3627,101 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         const cur = activeDecks().slice();
         const i = cur.indexOf(arg);
         if (i >= 0) cur.splice(i, 1); else cur.push(arg);
-        S.settings.decks = TOPICS.map((t) => t.id).filter((id) => cur.indexOf(id) >= 0);
+        S.settings.followPath = false;
+        S.settings.decks = knownDeckIds().filter((id) => cur.indexOf(id) >= 0);
         save();
         render();
         break;
       }
       case 'deck-all':
-        S.settings.decks = TOPICS.map((t) => t.id);
+        S.settings.followPath = false;
+        S.settings.decks = knownDeckIds();
         save();
         render();
         break;
       case 'deck-none':
+        S.settings.followPath = false;
         S.settings.decks = [];
         save();
         render();
         break;
+      case 'path':
+        if (arg === 'on') S.settings.followPath = true;
+        else {
+          S.settings.followPath = false;
+          S.settings.decks = knownDeckIds().filter((id) => pathDeckIds().indexOf(id) >= 0);
+        }
+        save();
+        render();
+        break;
+      case 'stage': {
+        const n = Number(arg);
+        const max = unlockedMax();
+        if (!(n >= 1 && n <= 4)) break;
+        if (n > max) {
+          toast('先把第 ' + max + ' 阶段学扎实，再进入第 ' + n + ' 阶段');
+          break;
+        }
+        S.settings.stage = n;
+        S.settings.followPath = true;
+        if (n === 3) S.settings.stage3Seen = true;
+        save();
+        render();
+        break;
+      }
+      case 'stage3-ack':
+        if ((S.settings.stage || 1) !== 3) {
+          toast('先进入第 3 阶段');
+          break;
+        }
+        S.settings.stage3Ack = true;
+        save();
+        render();
+        toast('第 4 阶段已解锁');
+        break;
+      case 'band':
+        S.settings[arg === 'R' ? 'bandR' : 'bandL'] = cleanBand(parts[2]);
+        save();
+        render();
+        break;
+      case 'awl-optional':
+        S.settings.awlOptional = arg === '1';
+        save();
+        render();
+        break;
+      case 'awl-pace':
+        S.settings.dailyNew = 25;
+        if ((S.settings.dailyGoal || 0) < 40) S.settings.dailyGoal = 40;
+        save();
+        render();
+        toast('已按学术词表，每天 25 个新词');
+        break;
+      case 'awl-check':
+        startListCheck();
+        break;
+      case 'depth':
+        S.settings.studyDepth = arg === 'recognize' ? 'recognize' : 'understand';
+        save();
+        render();
+        break;
+      case 'collect-add':
+        addCustom(arg === 'listen' ? 'listen' : 'review', (document.getElementById('addWord') || {}).value, (document.getElementById('addNote') || {}).value, (document.getElementById('addPara') || {}).value);
+        break;
+      case 'collect-del': {
+        const kind = arg === 'listen' ? 'listen' : 'review';
+        const idx = Number(parts[2]);
+        const list = customLists()[kind];
+        if (list[idx]) list.splice(idx, 1);
+        save();
+        render();
+        break;
+      }
+      case 'collect-quick': {
+        const word = S.lookup;
+        S.lookup = '';
+        addCustom(arg === 'listen' ? 'listen' : 'review', word, '', '');
+        break;
+      }
       case 'words':
         wordsView = { topic: arg, q: '', limit: 60 };
         S.ui.screen = 'words:' + arg;
@@ -3165,6 +3814,11 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     stats,
     buildQueue,
     startQuiz,
+    unlockedMax,
+    reportedBand,
+    awlLimit,
+    wordOf,
+    addCustom,
     save,
     saveError: () => saveError || loadError,
     exportPayload,

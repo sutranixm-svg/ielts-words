@@ -34,43 +34,43 @@ const S = () => window.__ielts.state();
 
 setTimeout(() => {
   try {
-    // 默认精编 720 + 雅思，不含托福
-    assert(S().settings.decks.length === 7, '默认 7 个词库（精编 + 雅思）');
-    assert(S().settings.decks.indexOf('toefl') < 0, '默认不选托福');
-    assert(text().includes('7/8 个词库'), '今天页显示 7/8 个词库');
-    assert(text().includes('5371 词'), '今天页显示在学词数 5371');
-    const topicOfEarly = new Map(window.WORDS.map((w) => [w.w, w.t]));
+    // 新用户走推荐路径第 1 阶段，不再默认精编 720 + 雅思
+    assert(S().settings.followPath === true, '默认跟随推荐路径');
+    assert(S().settings.stage === 1, '从第 1 阶段开始');
+    assert(text().includes('高中词汇'), '今天页显示高中词汇');
+    assert(text().includes('3/13 个词库'), '今天页显示 3/13 个词库');
+    const gk0 = window.PATH.DATA.gk[0];
     const firstNew = window.__ielts.buildQueue('new').queue[0];
-    assert(topicOfEarly.get(firstNew.w) === 'education', '新词从精编教育按顺序开始：' + firstNew.w);
+    assert(firstNew.w === gk0, '新词从高中词表按顺序开始：' + firstNew.w);
+
+    // 自己选词库时，精编仍排在雅思词表前面
+    S().settings.followPath = false;
+    S().settings.decks = ['education', 'ielts'];
+    const manualFirst = window.__ielts.buildQueue('new').queue[0];
+    const topicOfEarly = new Map(window.WORDS.map((w) => [w.w, w.t]));
+    assert(topicOfEarly.get(manualFirst.w) === 'education', '手动选择时新词仍从精编教育开始：' + manualFirst.w);
+    S().settings.followPath = true;
+    S().settings.decks = ['education', 'environment', 'health', 'society', 'technology', 'work', 'ielts'];
 
     // 进入学习范围
     click('[data-act="open:decks"]');
     assert(text().includes('学习范围'), '进入学习范围页');
-    assert(doc.querySelectorAll('.deck').length === 8, '列出 8 个词库');
+    assert(doc.querySelectorAll('.deck').length === 13, '列出 13 个词库');
 
-    // 取消雅思，只留精编
-    click('[data-act="deck:ielts"]');
-    assert(S().settings.decks.length === 6, '取消勾选后剩 6 个');
-    assert(S().settings.decks.indexOf('ielts') < 0, 'ielts 已从选择中移除');
-    const left = 5371 - 4651;
-    const stat = window.__ielts.stats();
-    assert(stat.total === left, '统计总数随选择变化：' + stat.total + ' / ' + left);
-
-    // 学习队列只取选中词库
-    const built = window.__ielts.buildQueue('new');
-    const topicOf = new Map(window.WORDS.map((w) => [w.w, w.t]));
-    assert(built.queue.length > 0, '仍有可学新词');
-    assert(built.queue.every((q) => topicOf.get(q.w) !== 'ielts' && topicOf.get(q.w) !== 'toefl'), '队列里没有未选词库的词');
+    // 勾选会离开推荐路径
+    click('[data-act="deck:gk"]');
+    assert(S().settings.followPath === false, '手动勾选后不再跟随推荐路径');
+    assert(S().settings.decks.indexOf('gk') < 0, '取消了高中词表');
 
     // 全不选
     click('[data-act="deck-none"]');
     assert(S().settings.decks.length === 0, '全不选');
-    assert(text().includes('已选 0 / 8'), '页面提示已选 0 个');
+    assert(text().includes('已选 0 / 13'), '页面提示已选 0 个');
     assert(window.__ielts.buildQueue('new').queue.length === 0, '没有选中词库时不产生队列');
 
     // 全选恢复
     click('[data-act="deck-all"]');
-    assert(S().settings.decks.length === 8, '全选恢复 8 个');
+    assert(S().settings.decks.length === 13, '全选恢复 13 个');
 
     // 词表浏览
     click('[data-act="back"]');
