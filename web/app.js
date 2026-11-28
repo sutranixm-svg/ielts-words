@@ -54,7 +54,10 @@
     'https://cdn.jsdelivr.net/gh/' + REPO + '@main/data/articles.json',
     'https://gcore.jsdelivr.net/gh/' + REPO + '@main/data/articles.json',
   ];
-  const JUNK_RE = /sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword/i;
+  // 和 tools/collect_articles.py、每日外刊校验用同一组硬过滤。
+  const JUNK_RE = /sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword|black\s*friday|cyber\s*monday|\bhoroscope\b|spoiler alert/i;
+  const RELEVANT_RE = /climat|education|universit|student|health|research|econom|inflation|employ|environment|species|policy|election|science|housing|inequal|energy|emission|vaccine|disease|wage|poverty|migration|chip|semiconductor|artificial intelligence/i;
+  const FLUFF_RE = /\baffair\b|red carpet|box office|reality shows?|fashion statement|what to wear/i;
   // 版本清单和安装包都只走 https。文件名按版本号拼，不使用 assets[0]。
   /** 按版本号拼出各镜像上的安装包地址。 */
   function mirrorUrls(ver) {
@@ -139,7 +142,7 @@
         dailyGoal: 20,
         dailyReview: 40,
         examDate: '',
-        onlineAudio: true,
+        onlineAudio: false,
         decks: defaultDeckIds(),
         theme: 'dark',
         nickname: '',
@@ -735,6 +738,8 @@
     let seen = 0;
     let mastered = 0;
     let due = 0;
+    const deckOn = new Set(activeDecks());
+    const reviewCap = Math.max(5, Math.min(200, S.settings.dailyReview || 40));
     for (const w of WORDS) {
       const row = byTopic.get(w.t);
       if (row) row.total += 1;
@@ -746,7 +751,7 @@
         mastered += 1;
         if (row) row.mastered += 1;
       }
-      if (r.due <= day) due += 1;
+      if (r.due <= day && deckOn.has(w.t)) due += 1;
     }
     planDueWords(day).forEach((w) => {
       const r = S.words[w.w];
@@ -783,7 +788,8 @@
     const total = deckWords().length;
     return {
       today: { new: d.new || 0, review: d.review || 0, quiz: d.quiz || 0, total: activityOf(d) },
-      backlog: Math.max(0, due - Math.min(due, Math.max(5, Math.min(200, S.settings.dailyReview || 40)))),
+      backlog: Math.max(0, due - Math.min(due, reviewCap)),
+      todayReview: Math.min(due, reviewCap),
       newLeft: Math.max(0, S.settings.dailyNew - (d.new || 0)),
       due,
       seen,
@@ -977,6 +983,8 @@
     }
     const spell = spellDistractors(word.w, safePool);
     const opts = shuffle([word.w, ...spell]);
+    // 短语几乎拼不出像样的干扰项，只剩一个选项时题目没有区分度。
+    if (/\s/.test(word.w) || opts.length < 4) return makeItem(word, 'zh', pool);
     return {
       w: word.w,
       kind: 'spell',
@@ -1242,7 +1250,8 @@
     return 0;
   }
 
-  let FETCH_MS = 5000;
+  let FETCH_MS = 12000;
+  let FETCH_GRACE = 3500;
 
   function fetchTimeout(url, ms, opts) {
     const AC = (typeof AbortController !== 'undefined') ? AbortController : null;
@@ -1421,21 +1430,52 @@
     return betterPair(candidateFromApi(apiJson), candidateFromDist(distJson));
   }
 
-  /** Release 和 dist/version.json 并行拉，取版本更高的那份。单路失败不影响另一路。 */
+  /**
+   * 各源并行。先到的可用结果先留着，再给其余源一个短窗口报出更高版本。
+   * 全部结束时立刻返回，不等这个窗口。单路失败不影响另一路。
+   */
+  function collectCandidates(tasks, graceMs) {
+    const grace = graceMs == null ? FETCH_GRACE : graceMs;
+    return new Promise((resolve, reject) => {
+      let best = null;
+      let left = tasks.length;
+      let timer = null;
+      let finished = false;
+      const finish = () => {
+        if (finished) return;
+        finished = true;
+        if (timer) clearTimeout(timer);
+        if (best && best.version && best.urls && best.urls.length) resolve(best);
+        else reject(new Error('no urls'));
+      };
+      if (!left) {
+        finish();
+        return;
+      }
+      tasks.forEach((task) => {
+        Promise.resolve(task).then((c) => {
+          if (!finished && c && c.version) best = betterPair(best, c);
+        }, () => {}).then(() => {
+          if (finished) return;
+          left -= 1;
+          if (left <= 0) finish();
+          else if (best && !timer) timer = setTimeout(finish, grace);
+        });
+      });
+    });
+  }
+
+  /** Release 和 dist/version.json 并行拉，取版本更高的那份。 */
   function fetchVersion() {
-    const apiP = fetchTimeout(RELEASES_API, FETCH_MS, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
+    const apiTask = fetchTimeout(RELEASES_API, FETCH_MS, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
       .then((j) => candidateFromApi(j))
       .catch(() => null);
-    const distP = Promise.all(DIST_URLS.map((u) => fetchTimeout(u + (u.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), FETCH_MS, { cache: 'no-store' })
+    const distTasks = DIST_URLS.map((u) => fetchTimeout(u + (u.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), FETCH_MS, { cache: 'no-store' })
       .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
       .then((j) => candidateFromDist(j))
-      .catch(() => null))).then((list) => list.reduce((best, c) => betterPair(best, c), null));
-    return Promise.all([apiP, distP]).then(([api, dist]) => {
-      const chosen = betterPair(api, dist);
-      if (!chosen || !chosen.version || !chosen.urls || !chosen.urls.length) throw new Error('no urls');
-      return chosen;
-    });
+      .catch(() => null));
+    return collectCandidates([apiTask].concat(distTasks));
   }
 
   function checkUpdate(manual) {
@@ -1695,7 +1735,9 @@
     const inProgress = Boolean(S.session && !S.session.done);
     let tip;
     if (inProgress) tip = '有一组学习还没做完，接着来吧。';
-    else if (st.due > 0) tip = `有 ${st.due} 个词到复习时间了，先复习再学新词。`;
+    else if (st.due > 0) tip = st.backlog
+      ? `有 ${st.due} 个词到期，今天先复习 ${st.todayReview} 个。`
+      : `有 ${st.due} 个词到复习时间了，先复习再学新词。`;
     else if (st.newLeft > 0) tip = `今天还可以学 ${st.newLeft} 个新词。`;
     else tip = '今天的新词学完了，做一组测验巩固一下。';
     const label = inProgress ? '继续学习' : st.due > 0 || st.newLeft > 0 ? '开始今日学习' : '加练 10 个词';
@@ -1712,7 +1754,7 @@
       : inProgress
         ? '还差几张卡片，继续？'
         : st.due > 0
-          ? `有 ${st.due} 个词到期了，先复习？`
+          ? (st.backlog ? `有 ${st.due} 个词到期，今天先复习 ${st.todayReview} 个？` : `有 ${st.due} 个词到期了，先复习？`)
           : st.newLeft > 0
             ? `今天还有 ${st.newLeft} 个新词，来一组？`
             : '今天的词学完了，做组测验？';
@@ -1824,7 +1866,7 @@
     };
     return `<div class="screen">
       <h1>复习</h1>
-      <p class="muted">今天有 <b style="color:var(--accent2)">${st.due}</b> 个词到期${st.backlog ? '，积压 ' + st.backlog + ' 个' : ''}</p>
+      <p class="muted">今天有 <b style="color:var(--accent2)">${st.due}</b> 个词到期${st.backlog ? '，今天先复习 ' + st.todayReview + ' 个，积压 ' + st.backlog + ' 个' : ''}</p>
       <section class="card">
         <div class="card-head"><span>记忆曲线</span><span>本周</span></div>
         <svg class="curve" viewBox="0 0 300 140" aria-hidden="true">
@@ -1915,6 +1957,15 @@
   function studyScreen() {
     const s = S.session;
     if (!s) return studyIntro();
+    if (!s.done) {
+      while (s.pos < s.queue.length && (!s.queue[s.pos] || !wordOf(s.queue[s.pos].w))) s.pos += 1;
+      if (s.pos >= s.queue.length) {
+        s.done = true;
+        s.results = s.results || { good: 0, hard: 0, again: 0, easy: 0 };
+        if (s.newCount == null) s.newCount = 0;
+        if (s.reviewCount == null) s.reviewCount = 0;
+      }
+    }
     if (s.done) return studySummary();
     const item = s.queue[s.pos];
     const w = wordOf(item.w) || { w: item.w, pos: '', zh: '', t: '' };
@@ -1972,7 +2023,7 @@
         <div class="chip"><b>${st.today.total}</b><span>今日已学</span></div>
       </div>
       <button class="btn primary" data-act="start">开始今日学习</button>
-      ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.due} 个</button>` : ''}
+      ${st.due > 0 ? `<button class="btn ghost" data-act="start:review">只复习 ${st.todayReview} 个</button>` : ''}
       <button class="btn ghost" data-act="start:extra">加练 · 再学 ${Math.max(10, S.settings.dailyNew || 15)} 个新词</button>
       <button class="btn ghost sm" data-act="open:weak">本周薄弱</button>
       <div class="row2">
@@ -2198,18 +2249,64 @@
     return days <= 1 ? '昨天' : days + ' 天前';
   }
 
+  function decodeEntities(s) {
+    return String(s || '')
+      .replace(/&#(\d+);/g, (all, n) => {
+        const c = Number(n);
+        return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : all;
+      })
+      .replace(/&#x([0-9a-f]+);/gi, (all, n) => {
+        const c = parseInt(n, 16);
+        return c > 0 && c < 0x110000 ? String.fromCodePoint(c) : all;
+      })
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;|&apos;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&amp;/g, '&');
+  }
+
+  function tidyArticleText(s) {
+    let t = decodeEntities(s).replace(/\s+/g, ' ').trim();
+    t = t.replace(/\s*[•·|]?\s*(?:(?:don['’]t|do not) get .{0,80}?delivered to your inbox\??.*)$/i, '');
+    t = t.replace(/\s*sign up here\b.*$/i, '');
+    return t.trim();
+  }
+
+  function articleScore(it) {
+    const blob = (it.title || '') + ' ' + (it.summary || '') + ' ' + (it.url || '');
+    if (JUNK_RE.test(blob)) return null;
+    let score = 0;
+    if (RELEVANT_RE.test(blob)) score += 3;
+    if (FLUFF_RE.test(blob)) score -= 4;
+    return score;
+  }
+
   function cleanArticles(items) {
     const seen = new Set();
     const out = [];
     (items || []).forEach((it) => {
       if (!it || !it.title || !it.url) return;
-      const blob = it.title + ' ' + (it.summary || '') + ' ' + it.url;
-      if (JUNK_RE.test(blob)) return;
-      const key = String(it.url).split('?')[0].toLowerCase();
+      const title = tidyArticleText(it.title);
+      const summary = tidyArticleText(it.summary || '');
+      if (!title) return;
+      const row = Object.assign({}, it, {
+        title,
+        summary,
+        title_zh: tidyArticleText(it.title_zh || ''),
+        summary_zh: tidyArticleText(it.summary_zh || ''),
+        words: (summary.match(/[A-Za-z']+/g) || []).length || it.words || 0,
+      });
+      const score = articleScore(row);
+      if (score == null) return;
+      row._score = score;
+      const key = String(row.url).split('?')[0].toLowerCase();
       if (seen.has(key)) return;
       seen.add(key);
-      out.push(it);
+      out.push(row);
     });
+    out.sort((a, b) => (b._score || 0) - (a._score || 0) || String(b.pub || '').localeCompare(String(a.pub || '')));
+    out.forEach((row) => { delete row._score; });
     return out;
   }
 
@@ -2218,7 +2315,22 @@
     if (!window.fetch) return;
     newsBusy = true;
     let pending = NEWS_URLS.length;
-    let done = false;
+    let bestStamp = -1;
+    let told = false;
+    const accept = (j, items) => {
+      const stamp = Date.parse((j && j.generated) || '') || 0;
+      if (stamp < bestStamp) return;
+      if (stamp === bestStamp && bestStamp >= 0) return;
+      bestStamp = stamp;
+      newsBusy = false;
+      S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items };
+      save();
+      render();
+      if (manual && !told) {
+        told = true;
+        toast('已更新 ' + items.length + ' 篇');
+      }
+    };
     NEWS_URLS.forEach((url) => {
       const loader = (typeof fetchTimeout === 'function')
         ? fetchTimeout(url + (url.indexOf('?') >= 0 ? '&' : '?') + 't=' + Date.now(), 8000, { cache: 'no-store' })
@@ -2226,19 +2338,13 @@
       loader
         .then((r) => (r.ok ? r.json() : Promise.reject(new Error('HTTP ' + r.status))))
         .then((j) => {
-          if (done) return;
           const items = cleanArticles(j && j.items);
           if (!items.length) throw new Error('empty');
-          done = true;
-          newsBusy = false;
-          S.news = { fetched: new Date().toISOString(), generated: j.generated || '', items: items };
-          save();
-          render();
-          if (manual) toast('已更新 ' + items.length + ' 篇');
+          accept(j, items);
         })
         .catch(() => {
           pending -= 1;
-          if (!done && pending <= 0) {
+          if (bestStamp < 0 && pending <= 0) {
             newsBusy = false;
             render();
             if (manual) toast('外刊更新失败，稍后再试');
@@ -2270,7 +2376,7 @@
       return `<div class="screen">
         <h1>外刊精读</h1>
         ${head}
-        <p class="small muted">每天北京时间 07:00 自动抓取科技、财经、生活、文娱各领域的最新英文报道，配中文对照。首次使用需要联网拉取一次。</p>
+        <p class="small muted">每天北京时间 07:00 自动抓取科技、财经、生活、文娱里更适合精读的英文报道，配中文对照。购物清单、谜题和剧透不会出现。首次使用需要联网拉取一次。</p>
         <p class="small muted">内容只保存标题与摘要，正文请点原文链接到发布方站点阅读。</p>
       </div>`;
     }
@@ -2696,7 +2802,7 @@
         ${WTOPIC.map(function (t, i) {
           return `<button class="cue" data-act="wtop:${i}">
             <b>${esc(t)}</b>
-            <span>${drafts[i] ? '已写 ' + drafts[i].length + ' 字' : '未开始'}</span>
+            <span>${draftLabel(drafts[i])}</span>
           </button>`;
         }).join('')}
       </div>
@@ -2717,7 +2823,7 @@
       <span class="ncat">TASK 2 · ${i + 1}</span>
       <h1 class="dtitle small">${esc(t)}</h1>
       <textarea id="wdraft" class="draft" placeholder="在这里写提纲或全文，只存在本机…">${esc(d)}</textarea>
-      <p class="small muted center"><span id="wcount">${d.length}</span> 字符 · 目标 250 词以上</p>
+      <p class="small muted center">英文 <span id="wcount">${essayCounts(d).wc}</span> 词 · 汉字 <span id="zcount">${essayCounts(d).zh}</span> · 目标 250 个英文词</p>
       <button class="btn primary" data-act="wcheck">检查一下</button>
       ${reportHTML()}
       <button class="btn ghost" data-act="back">返回</button>
@@ -2732,11 +2838,25 @@
 
   let essayReport = null;
 
+  function essayCounts(text) {
+    const t = String(text || '');
+    const words = t.match(/[A-Za-z][A-Za-z'-]*/g) || [];
+    const zh = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+    return { words, wc: words.length, zh };
+  }
+
+  function draftLabel(text) {
+    if (!String(text || '').trim()) return '未开始';
+    const c = essayCounts(text);
+    return '英文 ' + c.wc + ' 词' + (c.zh ? ' · 汉字 ' + c.zh : '');
+  }
+
   function checkEssay(text) {
     const t = String(text || '').trim();
-    const words = t.match(/[A-Za-z][A-Za-z'-]*/g) || [];
-    const wc = words.length;
-    const zhCount = (t.match(/[\u4e00-\u9fff]/g) || []).length;
+    const counted = essayCounts(t);
+    const words = counted.words;
+    const wc = counted.wc;
+    const zhCount = counted.zh;
     const sents = t.split(/[.!?]+/).map(function (x) { return x.trim(); }).filter(function (x) { return x.split(/\s+/).length > 2; });
     const avg = sents.length ? Math.round(wc / sents.length) : 0;
     const paras = t.split(/\n\s*\n/).map(function (x) { return x.trim(); }).filter(function (x) { return x.length > 20; }).length;
@@ -2962,7 +3082,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     if (S.settings.onboarded) return '';
     const step = S.onboardStep || 0;
     if (step === 0) {
-      return `<div class="onboard"><div class="eyebrow">第一次打开</div><h2>先把顺序定好</h2><p class="small muted">推荐路径按听力和阅读分数分四段：高中词汇、学术词表、学术核心、四级词汇。不能跳过还没学扎实的阶段。听力答案词和复盘生词一直都在。精编和整本雅思词表仍可以自己选。带录音的词可以离线听；没有录音时，联网发音来自有道词典。</p><button class="btn primary" data-act="onboard:1">继续</button></div>`;
+      return `<div class="onboard"><div class="eyebrow">第一次打开</div><h2>先把顺序定好</h2><p class="small muted">推荐路径按听力和阅读分数分四段：高中词汇、学术词表、学术核心、四级词汇。不能跳过还没学扎实的阶段。听力答案词和复盘生词一直都在。精编和整本雅思词表仍可以自己选。带录音的词可以离线听；没有录音时用手机自己的语音。打开「联网补全」后，单词会发给有道词典。</p><button class="btn primary" data-act="onboard:1">继续</button></div>`;
     }
     if (step === 1) {
       return `<div class="onboard"><h2>每天学多少</h2><p class="small muted">现在是每天 ${S.settings.dailyNew} 个新词，复习上限 ${S.settings.dailyReview || 40} 个。这些都能在「我的」里改。</p><button class="btn primary" data-act="onboard:2">继续</button></div>`;
@@ -3333,6 +3453,16 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     toast('错词记录已清空');
   }
 
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' || e.isComposing) return;
+    const q = S.quiz;
+    if (!q || q.done || q.answered) return;
+    const item = q.items[q.pos];
+    if (!item || !item.typed || !e.target || e.target.id !== 'typed') return;
+    e.preventDefault();
+    answerTyped();
+  });
+
   document.addEventListener('input', (e) => {
     if (e.target && e.target.id === 'nick') {
       S.settings.nickname = String(e.target.value || '').slice(0, 16);
@@ -3347,8 +3477,11 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     if (e.target && e.target.id === 'wdraft') {
       S.writing = S.writing || {};
       S.writing[S.ui.screen.slice(5)] = e.target.value;
+      const counted = essayCounts(e.target.value);
       const c = document.getElementById('wcount');
-      if (c) c.textContent = String(e.target.value.length);
+      const zc = document.getElementById('zcount');
+      if (c) c.textContent = String(counted.wc);
+      if (zc) zc.textContent = String(counted.zh);
       save();
       return;
     }
@@ -3496,6 +3629,7 @@ Some caution is warranted. Much of the research uses small samples, and effects 
         S.settings.onlineAudio = arg === '1';
         save();
         render();
+        if (S.settings.onlineAudio) toast('联网发音会把单词发给有道词典，可随时关掉');
         break;
       case 'say':
         say(parts.slice(1).join(':'));
@@ -3829,6 +3963,9 @@ Some caution is warranted. Much of the research uses small samples, and effects 
     acceptHash,
     chooseUpdate,
     pickAsset,
+    cleanArticles,
+    essayCounts,
     setFetchMs: (n) => { FETCH_MS = n; },
+    setFetchGrace: (n) => { FETCH_GRACE = n; },
   };
 })();

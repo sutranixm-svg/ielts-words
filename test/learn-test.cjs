@@ -64,8 +64,35 @@ setTimeout(() => {
     click('[data-act="quiz:start:cloze"]');
     assert(S().quiz.items[0].kind === 'cloze' && S().quiz.items[0].prompt.includes('______'), '完形是挖空的例句');
     doc.getElementById('typed').value = S().quiz.items[0].expect;
-    click('[data-act="quiz:typed"]');
-    assert(S().quiz.items[0].correct === true, '填对例句挖空');
+    doc.getElementById('typed').dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    assert(S().quiz.items[0].correct === true, '回车提交填空');
+
+    const badIpa = window.WORDS.filter((w) => (w.ipa || '').includes('\\'));
+    assert(badIpa.length === 0, '词库音标不含反斜杠');
+    assert(window.WORDS.find((w) => w.w === 'conversely').ipa === '/ˈkɔnvɜːsli/', 'conversely 的 ɜ 已还原');
+    assert(window.WORDS.find((w) => w.w === 'drought').ipa === '/dɹʌʊt/', '方括号音标改成斜杠');
+    const abate = window.WORDS.find((w) => w.w === 'abate').zh.split('；');
+    assert(abate.length === new Set(abate).size, '重复释义已去掉');
+    assert(window.LEXICON_EXTRA['co-operation'] && window.LEXICON_EXTRA['co-operation'].ipa, 'co-operation 借用了 cooperation 的音标');
+
+    click('[data-act="pause"]');
+    S().quiz = null;
+    click('[data-act="tab:quiz"]');
+    click('[data-act="quiz:start:spell"]');
+    S().quiz.items.forEach((item) => {
+      if (item.kind === 'spell') assert(item.options.length >= 4, '拼写题至少 4 个选项：' + item.w);
+      else assert(item.kind === 'zh', '选项不够时改问词义：' + item.w);
+    });
+    click('[data-act="pause"]');
+    S().quiz = null;
+    S().session = {
+      day: '2026-01-01', queue: [{ w: 'not-a-real-word', kind: 'new' }], pos: 0, revealed: false, done: false,
+      results: { good: 0, hard: 0, again: 0, easy: 0 }, newCount: 1, reviewCount: 0, requeued: {},
+    };
+    click('[data-act="tab:study"]');
+    assert(S().session.done === true, '词库里没有的卡片会跳过');
+    assert(text().indexOf('undefined') < 0, '缺词不会把学习页打崩');
+    S().session = null;
 
     click('[data-act="pause"]');
     S().settings.dailyNew = 1;

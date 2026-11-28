@@ -70,6 +70,7 @@ function spellingVariants(word) {
   swap('our', 'or');
   if (x.endsWith('re') && x.length > 4) out.push(x.slice(0, -2) + 'er');
   if (x.includes('ae')) out.push(x.replace('ae', 'e'));
+  if (x.includes('-')) out.push(x.replace(/-/g, ''));
   if (x === 'wellbeing') out.push('well-being');
   if (x === 'axe') out.push('ax');
   if (x === 'cosy') out.push('cozy');
@@ -166,7 +167,7 @@ lines.push('生成脚本：`node tools/enrich_lexicon.js`。只从现有词条�
 lines.push('');
 lines.push('## 已补上');
 lines.push('');
-lines.push('- 拼写变体音标（英美拼写指向已有音标）：' + variantFilled.length);
+lines.push('- 拼写变体和连字符音标（指向词表里已有的音标）：' + variantFilled.length);
 lines.push('- 规则复数音标（词根音标 + /s/、/z/ 或 /ɪz/）：' + derived.length);
 lines.push('- 从精编例句里抽出的搭配：' + colCount + ' 个词');
 lines.push('- 易混词：词表里同时存在的固定对照，以及英美拼写对照');
@@ -185,10 +186,15 @@ stillIpa.forEach((w) => lines.push('- `' + w.w + '`（' + w.t + '）'));
 lines.push('');
 lines.push('## 音标字符串已损坏（' + corrupted.length + '）');
 lines.push('');
-lines.push('原字段里有多余的反斜杠，无法可靠还原元音，所以保留原样。');
-lines.push('');
-corrupted.forEach((w) => lines.push('- `' + w.w + '` ' + w.ipa));
-lines.push('');
+if (!corrupted.length) {
+  lines.push('没有残留的坏音标。原先 `ɜ` 被写成反斜杠的条目，以及 3 条方括号音标，已经按原字符串里的辅音还原，没有新猜元音。');
+  lines.push('');
+} else {
+  lines.push('原字段里有多余的反斜杠，无法可靠还原元音，所以保留原样。');
+  lines.push('');
+  corrupted.forEach((w) => lines.push('- `' + w.w + '` ' + w.ipa));
+  lines.push('');
+}
 lines.push('## 没有例句也没有英文释义（' + noExDef.length + '）');
 lines.push('');
 lines.push('中文释义还在。没有现成英文例句或 ECDICT definition 可以抄，所以留空。');

@@ -5,17 +5,7 @@ const { JSDOM } = require('jsdom');
 const root = path.resolve(__dirname, '..');
 const { inlineHtml } = require('./inline.js');
 const feed = JSON.parse(fs.readFileSync(path.join(root, 'data/articles.json'), 'utf8'));
-const JUNK_RE = /sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword/i;
-const shown = [];
-const seenUrl = new Set();
-feed.items.forEach((it) => {
-  const blob = it.title + ' ' + (it.summary || '') + ' ' + it.url;
-  if (JUNK_RE.test(blob)) return;
-  const key = String(it.url).split('?')[0].toLowerCase();
-  if (seenUrl.has(key)) return;
-  seenUrl.add(key);
-  shown.push(it);
-});
+let shown = [];
 
 function boot({ data = feed, fail = false } = {}) {
   const calls = [];
@@ -62,6 +52,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   try {
     // 1. 空状态 + 自动拉取
     let t = boot();
+    shown = t.window.__ielts.cleanArticles(feed.items);
     await sleep(4000); // 等启动后的自动拉取（3.5s）
     let view = text(t.doc);
     assert(t.doc.querySelectorAll('.tab').length === 4, '底部有 4 个标签');
@@ -74,6 +65,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     assert(view.includes('外刊精读'), '进入外刊列表');
     assert(t.doc.querySelectorAll('.ncard').length === shown.length, '列表渲染过滤后的 ' + shown.length + ' 篇');
     assert(view.indexOf('Sudoku') < 0 && view.indexOf('crossword') < 0, '数独和填字游戏不进列表');
+    assert(view.indexOf('Black Friday') < 0 && view.toLowerCase().indexOf('spoiler alert') < 0, '购物清单和剧透不进列表');
     assert(view.includes(feed.items[0].title.slice(0, 18)), '显示英文标题');
     assert(view.includes(feed.items[0].title_zh.slice(0, 8)), '显示中文标题');
     assert(/更新于/.test(view), '显示更新时间');
@@ -81,7 +73,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     // 2. 打开详情
     click(t.window, '.ncard');
     view = text(t.doc);
-    const it = feed.items[0];
+    const it = shown[0];
     assert(view.includes('SUMMARY'), '详情有英文摘要区');
     assert(view.includes('中文对照'), '详情有中文对照区');
     assert(view.includes(it.summary_zh.slice(0, 10)), '中文摘要内容正确');
@@ -116,6 +108,28 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     click(t3.window, '[data-act="tab:study"]');
     click(t3.window, '[data-act="tab:news"]');
     assert(before === 0 && t3.doc.querySelectorAll('.ncard').length === shown.length, '切换标签时按需拉取并渲染');
+
+    // 8. 实体、购物清单和剧透
+    const mixed = {
+      generated: '2026-11-27T00:00:00Z',
+      items: [
+        { id: 'bf', cat: 'life', src: 'Shop', title: 'Best Black Friday deals', title_zh: '黑色星期五', summary: 'Towels on sale', summary_zh: '浴巾打折', url: 'https://example.com/bf', pub: '2026-11-27T03:00:00Z' },
+        { id: 'sp', cat: 'culture', src: 'TV', title: 'The finale', title_zh: '大结局', summary: 'Spoiler alert: everyone leaves.', summary_zh: '剧透', url: 'https://example.com/sp', pub: '2026-11-27T02:00:00Z' },
+        { id: 'uni', cat: 'tech', src: 'BBC', title: 'Universities cut emissions', title_zh: '大学减排', summary: 'A study of &#8220;campus&#8221; energy. Sign up here for more.', summary_zh: '一项校园能源研究', url: 'https://example.com/uni', pub: '2026-11-27T01:00:00Z', words: 8 },
+      ],
+    };
+    const t4 = boot({ data: mixed });
+    await sleep(200);
+    click(t4.window, '[data-act="tab:study"]');
+    click(t4.window, '[data-act="tab:news"]');
+    await sleep(400);
+    const cards = t4.doc.querySelectorAll('.ncard');
+    assert(cards.length === 1, '只留下适合精读的一篇');
+    assert(text(t4.doc).includes('Universities cut emissions'), '保留大学减排');
+    assert(!text(t4.doc).includes('Black Friday') && !text(t4.doc).toLowerCase().includes('spoiler'), '购物和剧透被滤掉');
+    click(t4.window, '.ncard');
+    const detail = text(t4.doc);
+    assert(detail.includes('campus') && !detail.includes('&#8220;') && !detail.includes('Sign up'), '摘要解码实体并去掉订阅尾巴');
 
     console.log('\nNEWS TEST PASS');
     process.exit(0);

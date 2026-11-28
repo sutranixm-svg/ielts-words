@@ -4,6 +4,7 @@
 只保存标题、摘要、链接和署名，不保存全文。
 翻译优先走 Google 的公开端点，失败时退到 MyMemory；两者都失败就保留英文。
 """
+import html
 import json
 import os
 import re
@@ -21,6 +22,7 @@ UA = "Mozilla/5.0 (compatible; ielts-words-daily/1.0)"
 # 分类 -> [(来源名, RSS 地址, 权重)]
 FEEDS = {
     "tech": [
+        ("BBC Science", "https://feeds.bbci.co.uk/news/science_and_environment/rss.xml", 4),
         ("TechCrunch", "https://techcrunch.com/feed/", 3),
         ("The Verge", "https://www.theverge.com/rss/index.xml", 3),
         ("Ars Technica", "https://feeds.arstechnica.com/arstechnica/index", 2),
@@ -32,8 +34,10 @@ FEEDS = {
         ("BBC Business", "https://feeds.bbci.co.uk/news/business/rss.xml", 2),
     ],
     "life": [
-        ("The Guardian", "https://www.theguardian.com/lifeandstyle/rss", 3),
-        ("BBC Health", "https://feeds.bbci.co.uk/news/health/rss.xml", 2),
+        ("BBC Education", "https://feeds.bbci.co.uk/news/education/rss.xml", 4),
+        ("The Guardian Environment", "https://www.theguardian.com/environment/rss", 4),
+        ("The Guardian", "https://www.theguardian.com/lifeandstyle/rss", 2),
+        ("BBC Health", "https://feeds.bbci.co.uk/news/health/rss.xml", 3),
         ("Sky News", "https://feeds.skynews.com/feeds/rss/world.xml", 2),
     ],
     "culture": [
@@ -55,9 +59,15 @@ def fetch(url, timeout=25):
 
 def strip_html(s):
     s = re.sub(r"<[^>]+>", " ", s or "")
-    s = (s.replace("&nbsp;", " ").replace("&amp;", "&").replace("&quot;", '"')
-          .replace("&#39;", "'").replace("&lt;", "<").replace("&gt;", ">"))
-    return re.sub(r"\s+", " ", s).strip()
+    s = html.unescape(html.unescape(s))
+    s = re.sub(r"\s+", " ", s).strip()
+    s = re.sub(
+        r"\s*[•·|]?\s*(?:(?:don['’]t|do not) get .{0,80}?delivered to your inbox\??.*|sign up here\b.*|subscribe (?:here|to our newsletter).*)$",
+        "",
+        s,
+        flags=re.I,
+    ).strip()
+    return s
 
 
 def parse_date(s):
@@ -110,12 +120,37 @@ def parse_feed(raw):
     return items
 
 
-JUNK_RE = re.compile(r"sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword", re.I)
+# 和 web/app.js、每日外刊校验用同一组硬过滤。购物清单、谜题、星座和剧透不进词库阅读。
+JUNK_RE = re.compile(
+    r"sudoku|crossword|cross-word|wordle|\bpuzzle\b|cryptic crossword|"
+    r"black\s*friday|cyber\s*monday|\bhoroscope\b|spoiler alert",
+    re.I,
+)
+RELEVANT_RE = re.compile(
+    r"climat|education|universit|student|health|research|econom|inflation|employ|"
+    r"environment|species|policy|election|science|housing|inequal|energy|emission|"
+    r"vaccine|disease|wage|poverty|migration|chip|semiconductor|artificial intelligence",
+    re.I,
+)
+FLUFF_RE = re.compile(
+    r"\baffair\b|red carpet|box office|reality shows?|fashion statement|what to wear",
+    re.I,
+)
 
 
 def is_junk(title, summary, url):
     blob = " ".join([title or "", summary or "", url or ""])
     return bool(JUNK_RE.search(blob))
+
+
+def relevance(title, summary):
+    blob = " ".join([title or "", summary or ""])
+    score = 0
+    if RELEVANT_RE.search(blob):
+        score += 30
+    if FLUFF_RE.search(blob):
+        score -= 40
+    return score
 
 
 def shorten(text, limit=280):
@@ -225,7 +260,7 @@ def main():
                 pool.append({
                     "cat": cat, "src": name, "title": it["title"], "url": it["url"],
                     "summary": it["summary"], "pub": it["pub"],
-                    "score": weight * 100 - rank * 5,
+                    "score": weight * 100 - rank * 5 + relevance(it["title"], it["summary"]),
                 })
             print("%-16s %2d/%2d" % (name, len(fresh[:8]), len(items)), file=sys.stderr)
 
@@ -309,5 +344,22 @@ def main():
     print("wrote %s (%d items)" % (os.path.normpath(OUT), len(out["items"])), file=sys.stderr)
 
 
+def _selftest():
+    assert is_junk("Today's sudoku", "", "https://example.com/s")
+    assert is_junk("Best Black Friday deals", "towels on sale", "https://example.com/bf")
+    assert is_junk("Finale notes", "Spoiler alert: the ending", "https://example.com/sp")
+    assert not is_junk("China industrial profits surge", "The economy grew", "https://example.com/cn")
+    decoded = strip_html("A study of &#8220;campus&#8221; energy.")
+    assert "&#" not in decoded and "campus" in decoded
+    trimmed = strip_html("Hello. Don't get Fashion Statement delivered to your inbox? Sign up here now")
+    assert "Sign up" not in trimmed and trimmed.startswith("Hello")
+    assert relevance("Universities cut emissions", "A climate study") > 0
+    assert relevance("Star's affair", "red carpet photos") < 0
+    print("articles selftest ok")
+
+
 if __name__ == "__main__":
-    main()
+    if os.environ.get("ARTICLES_SELFTEST") == "1":
+        _selftest()
+    else:
+        main()

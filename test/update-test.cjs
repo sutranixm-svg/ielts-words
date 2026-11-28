@@ -208,6 +208,63 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     assert(t6.window.__ielts.state().seenUpdate === '9.9.9', 'seenUpdate 保持为 9.9.9');
     t6.window.close();
 
+    // 12) 一个镜像先返回，其余源挂起：不要等满超时
+    const t7 = boot({ version: '1.0.0', tag: 'v1.0.0' });
+    t7.window.__ielts.setFetchMs(8000);
+    t7.window.__ielts.setFetchGrace(120);
+    t7.window.fetch = (url) => {
+      const u = String(url);
+      if (u.indexOf('raw.githubusercontent.com') >= 0 && u.indexOf('version.json') >= 0) {
+        return new Promise((resolve) => setTimeout(() => resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            version: '2.0.0', versionCode: 20, size: 10, sha256: 'aa',
+            urls: ['https://cdn.example/ielts-vocab-2.0.0.apk'],
+          }),
+        }), 30));
+      }
+      return new Promise(() => {});
+    };
+    click(t7.window, '[data-act="tab:library"]');
+    click(t7.window, '[data-act="open:settings"]');
+    click(t7.window, '[data-act="check-update"]');
+    await sleep(400);
+    assert(t7.window.__ielts.state().update && t7.window.__ielts.state().update.version === '2.0.0', '慢源还没返回时先采用已经拿到的版本');
+    t7.window.close();
+
+    // 13) 宽限时间内有更高版本，要采用更高的
+    const t8 = boot({ version: '1.0.0', tag: 'v1.0.0' });
+    t8.window.__ielts.setFetchMs(8000);
+    t8.window.__ielts.setFetchGrace(250);
+    t8.window.fetch = (url) => {
+      const u = String(url);
+      if (u.indexOf('raw.githubusercontent.com') >= 0 && u.indexOf('version.json') >= 0) {
+        return new Promise((resolve) => setTimeout(() => resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            version: '2.0.0', versionCode: 20, size: 10, sha256: 'aa',
+            urls: ['https://cdn.example/ielts-vocab-2.0.0.apk'],
+          }),
+        }), 20));
+      }
+      if (u.indexOf('api.github.com') >= 0) {
+        return new Promise((resolve) => setTimeout(() => resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            tag_name: 'v3.0.0',
+            assets: [{ name: 'ielts-vocab-3.0.0.apk', size: 12, digest: 'sha256:bb', browser_download_url: 'https://github.com/sutranixm-svg/ielts-words/releases/download/v3.0.0/ielts-vocab-3.0.0.apk' }],
+          }),
+        }), 80));
+      }
+      return new Promise(() => {});
+    };
+    click(t8.window, '[data-act="tab:library"]');
+    click(t8.window, '[data-act="open:settings"]');
+    click(t8.window, '[data-act="check-update"]');
+    await sleep(500);
+    assert(t8.window.__ielts.state().update && t8.window.__ielts.state().update.version === '3.0.0', '宽限内更高的版本会盖过先到的镜像');
+    t8.window.close();
+
     console.log('\nUPDATE TEST PASS');
     process.exit(0);
   } catch (e) {
