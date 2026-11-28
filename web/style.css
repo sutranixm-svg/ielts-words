@@ -121,6 +121,20 @@ h3{font-size:14px;margin:0;letter-spacing:.2px;font-weight:700}
 .ipa{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14px;color:var(--muted);letter-spacing:.2px}
 .divider{width:44px;height:2px;border-radius:2px;background:var(--line);margin:6px auto}
 .meaning{font-size:21px;font-weight:680;line-height:1.4;animation:fade .25s ease}
+.meaning .sense{font-size:15px;font-weight:600;line-height:1.45;margin-top:6px}
+.meaning .sense.main{font-size:20px;font-weight:720;margin-top:0}
+.depth-seg{margin-top:8px}
+.path-card{display:flex;flex-direction:column;gap:8px}
+.stages{display:flex;flex-direction:column;gap:8px}
+.stage{display:flex;gap:10px;align-items:center;justify-content:space-between;text-align:left;width:100%;border:1px solid var(--line);background:var(--card);border-radius:16px;padding:12px;color:inherit;font:inherit}
+.stage span{display:flex;flex-direction:column;gap:3px;min-width:0}
+.stage b{font-size:14px}
+.stage.on{border-color:var(--accent);background:var(--active)}
+.stage.lock{opacity:.6}
+.bands{display:flex;flex-wrap:wrap;gap:6px}
+.bands button{border:1px solid var(--line);background:var(--card);color:inherit;border-radius:999px;padding:6px 10px;font:inherit}
+.bands button.on{background:var(--active);border-color:var(--accent)}
+.list-item.dim{opacity:.55}
 .example{font-size:14px;line-height:1.72;color:var(--muted);max-width:34ch}
 .hint{position:absolute;bottom:14px;left:0;right:0;font-size:11px;color:var(--dim);text-align:center}
 

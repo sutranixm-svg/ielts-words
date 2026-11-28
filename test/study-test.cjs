@@ -70,6 +70,8 @@ setTimeout(() => {
 
     /* ---------- 3. 艾宾浩斯错词 ---------- */
     const st2 = S();
+    st2.settings.followPath = false;
+    st2.settings.decks = ['education'];
     const picked = window.WORDS.slice(0, 30);
     picked.forEach((w) => {
       st2.words[w.w] = { box: 0, due: today, seen: 1, right: 0, wrong: 2, first: today, last: today, wstep: 0, wdue: today, wlast: null };

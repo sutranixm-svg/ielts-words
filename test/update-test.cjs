@@ -6,6 +6,10 @@ const root = path.resolve(__dirname, '..');
 const { inlineHtml } = require('./inline.js');
 
 const ASSET = 'https://github.com/sutranixm-svg/ielts-words/releases/download/v9.9.9/ielts-vocab.apk';
+const isEndpoint = (value, hostname, pathname) => {
+  const url = new URL(String(value));
+  return url.protocol === 'https:' && url.hostname === hostname && url.pathname === pathname;
+};
 
 function boot({ version = '1.2.0', tag = 'v9.9.9', withBridge = true } = {}) {
   const calls = [];
@@ -214,7 +218,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     t7.window.__ielts.setFetchGrace(120);
     t7.window.fetch = (url) => {
       const u = String(url);
-      if (u.indexOf('raw.githubusercontent.com') >= 0 && u.indexOf('version.json') >= 0) {
+      if (isEndpoint(u, 'raw.githubusercontent.com', '/sutranixm-svg/ielts-words/dist/version.json')) {
         return new Promise((resolve) => setTimeout(() => resolve({
           ok: true,
           json: () => Promise.resolve({
@@ -238,7 +242,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     t8.window.__ielts.setFetchGrace(250);
     t8.window.fetch = (url) => {
       const u = String(url);
-      if (u.indexOf('raw.githubusercontent.com') >= 0 && u.indexOf('version.json') >= 0) {
+      if (isEndpoint(u, 'raw.githubusercontent.com', '/sutranixm-svg/ielts-words/dist/version.json')) {
         return new Promise((resolve) => setTimeout(() => resolve({
           ok: true,
           json: () => Promise.resolve({
@@ -247,7 +251,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
           }),
         }), 20));
       }
-      if (u.indexOf('api.github.com') >= 0) {
+      if (isEndpoint(u, 'api.github.com', '/repos/sutranixm-svg/ielts-words/releases/latest')) {
         return new Promise((resolve) => setTimeout(() => resolve({
           ok: true,
           json: () => Promise.resolve({

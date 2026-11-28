@@ -2,6 +2,19 @@
 
 生成脚本：`node tools/enrich_lexicon.js`。只从现有词条推导，不新写例句或释义。
 
+推荐路径另有 `python3 tools/build_path_data.py ecdict.csv`。它只做两件事：给 Coxhead 学术词表的词族挂上词库里已经有的词，以及从 ECDICT（MIT）抄 `gk` / `cet4` 标签和已有释义。不新写例句。
+
+## 推荐路径用了哪些词表
+
+- **学术词表 AWL**：570 个词族、10 个 Sublist。词族来自 `data/awl.json`，那是 [machine_readable_wordlists](https://github.com/lpmi-13/machine_readable_wordlists) 的 CC0 转写，对应 Victoria University of Wellington 公布的 Coxhead Academic Word List。每个词族都在现有词库或 ECDICT 里找到了可学习的词，没有编释义。Sublist 内按字母序编号。
+- **高中词汇**：ECDICT 的 `gk`（高考）标签，3669 词。这不是某一本「高中 3500」书的逐条复印。
+- **四级词汇**：ECDICT 的 `cet4` 标签，3847 词。
+- **听力答案词、复盘生词**：应用里由用户自己添加，不内置词表。
+
+## 没有放进来的词表
+
+- **538 学术核心词**：没有找到可以随应用分发的公开词表。阶段 3 仍然留在路径里，听力答案词和复盘生词也还在。没有导入《雅思词汇真经》或其他教辅书的词表。
+
 ## 已补上
 
 - 拼写变体和连字符音标（指向词表里已有的音标）：6
